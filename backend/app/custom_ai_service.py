@@ -96,6 +96,7 @@ class CustomAIService:
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session = None
         self.contexts = {}  # Store contexts per meeting_id
+        self.chat_ids = {}  # Store chatId per meeting_id for subsequent API calls
         
     async def initialize(self):
         """Initialize the aiohttp session with Glean API headers"""
@@ -164,9 +165,9 @@ class CustomAIService:
                     question = transcript_chunk
 
             # Prepare Glean API request
+            # Use chatId if we have it for this meeting, otherwise use agentId
             glean_request = {
                 "saveChat": True,
-                "agentId": self.agent_id,
                 "messages": [
                     {
                         "agentConfig": {
@@ -187,6 +188,14 @@ class CustomAIService:
                 "timeoutMillis": 30000,
                 "stream": False
             }
+            
+            # Add chatId or agentId based on whether this is a continuation
+            if meeting_id in self.chat_ids:
+                glean_request["chatId"] = self.chat_ids[meeting_id]
+                logger.info(f"Using existing chatId for meeting {meeting_id}: {self.chat_ids[meeting_id]}")
+            else:
+                glean_request["agentId"] = self.agent_id
+                logger.info(f"Using agentId for first call of meeting {meeting_id}")
                         
             # Call Glean API
             logger.info(f"Calling Glean API for meeting {meeting_id} with chunk: {transcript_chunk[:100]}...")
@@ -199,6 +208,11 @@ class CustomAIService:
                 
                 if response.status == 200:
                     result = await response.json()
+                    
+                    # Extract and store chatId if present (first call for this meeting)
+                    if "chatId" in result:
+                        self.chat_ids[meeting_id] = result["chatId"]
+                        logger.info(f"Stored chatId for meeting {meeting_id}: {result['chatId']}")
                     
                     # Extract the AI response from Glean format
                     ai_response = ""
@@ -213,19 +227,6 @@ class CustomAIService:
                                         ai_response = fragment["text"]
                     
                     logger.info(f"Extracted AI response: {ai_response[:200]}..." if ai_response else "No AI response extracted")
-                    
-                    # Store AI response in context
-                    # context.add_ai_response(ai_response, transcript_chunk)
-                    
-                    # return {
-                    #     "meeting_id": meeting_id,
-                    #     "response": ai_response,
-                    #     "context": context.get_full_context(),
-                    #     "suggestions": result.get("suggestions", []),
-                    #     "relevant_documents": result.get("documents", []),
-                    #     "timestamp": datetime.utcnow().isoformat(),
-                    #     "raw_response": result  # Include raw response for debugging
-                    # }
                     return "Glean AI Response: "+ai_response
                 else:
                     error_text = await response.text()
@@ -238,197 +239,6 @@ class CustomAIService:
         except Exception as e:
             logger.error(f"Error processing transcript chunk for meeting {meeting_id}: {str(e)}", exc_info=True)
             return None
-    
-    async def get_summary_context(self, meeting_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get summary and context for a meeting using Glean AI
-        
-        Args:
-            meeting_id: Unique identifier for the meeting
-            
-        Returns:
-            Dict containing meeting context and suggestions
-        """
-        if meeting_id not in self.contexts:
-            return None
-            
-        context = self.contexts[meeting_id]
-        full_context = context.get_full_context()
-        
-        if not self.session:
-            await self.initialize()
-        
-        try:
-            # Build summary request for Glean
-            summary_prompt = f"""Please provide a comprehensive summary of this meeting:
-
-Meeting Context:
-- Recent Transcript: {full_context.get('recent_transcript', 'No transcript available')}
-- Current Topic: {full_context.get('current_topic', 'Not identified')}
-- Participants: {', '.join(full_context.get('participants', [])) if full_context.get('participants') else 'Not identified'}
-
-Please include:
-1. Main topics discussed
-2. Key decisions made
-3. Action items
-4. Important insights or concerns raised"""
-
-            glean_request = {
-                "saveChat": True,
-                "agentId": self.agent_id,
-                "messages": [
-                    {
-                        "agentConfig": {
-                            "agent": "DEFAULT",
-                            "mode": "DEFAULT"
-                        },
-                        "messageType": "CONTENT",
-                        "author": "USER",
-                        "fragments": [
-                            {"text": summary_prompt}
-                        ]
-                    }
-                ],
-                "agentConfig": {
-                    "agent": "DEFAULT",
-                    "mode": "DEFAULT"
-                },
-                "timeoutMillis": 30000,
-                "stream": False
-            }
-            logger.info(f"Glean request: {glean_request}")
-            # Request comprehensive summary from Glean
-            async with self.session.post(
-                f"{self.api_url}/chat?timezoneOffset=+330#stream",
-                json=glean_request
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    logger.info(f"Glean result: {result}")
-                    # Extract the summary from Glean response
-                    summary = ""
-                    if "messages" in result and len(result["messages"]) > 0:
-                        for message in result["messages"]:
-                            # Glean API may return 'GLEAN_AI' or 'ASSISTANT' as the author
-                            if message.get("author") in ["GLEAN_AI", "ASSISTANT"] and "fragments" in message:
-                                for fragment in message["fragments"]:
-                                    if "text" in fragment:
-                                        summary += fragment["text"]
-                    logger.info(f"Glean summary: {summary}")
-                    
-                    return {
-                        "meeting_id": meeting_id,
-                        "summary": summary,
-                        "context": full_context,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                else:
-                    logger.error(f"Failed to get summary for meeting {meeting_id}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Error getting summary for meeting {meeting_id}: {str(e)}", exc_info=True)
-            return None
-    
-    def clear_context(self, meeting_id: str):
-        """Clear context for a specific meeting"""
-        if meeting_id in self.contexts:
-            self.contexts[meeting_id].clear()
-            del self.contexts[meeting_id]
-    
-    async def search_knowledge_base(self, query: str, meeting_id: Optional[str] = None) -> List[Dict]:
-        """
-        Search the Glean knowledge base for relevant information
-        
-        Args:
-            query: Search query
-            meeting_id: Optional meeting ID for context
-            
-        Returns:
-            List of relevant documents/information
-        """
-        if not self.session:
-            await self.initialize()
-        
-        try:
-            # Build search query with optional context
-            search_prompt = query
-            if meeting_id and meeting_id in self.contexts:
-                context = self.contexts[meeting_id].get_recent_context()
-                if context:
-                    search_prompt = f"In the context of this meeting discussion: {context}\n\nFind information about: {query}"
-            
-            glean_request = {
-                "saveChat": True,
-                "agentId": self.agent_id,
-                "messages": [
-                    {
-                        "agentConfig": {
-                            "agent": "DEFAULT",
-                            "mode": "DEFAULT"
-                        },
-                        "messageType": "CONTENT",
-                        "author": "USER",
-                        "fragments": [
-                            {"text": search_prompt}
-                        ]
-                    }
-                ],
-                "agentConfig": {
-                    "agent": "DEFAULT",
-                    "mode": "DEFAULT"
-                },
-                "timeoutMillis": 30000,
-                "stream": False
-            }
-            
-            async with self.session.post(
-                f"{self.api_url}/chat?timezoneOffset=+330#stream",
-                json=glean_request
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    
-                    # Extract search results from Glean response
-                    search_results = []
-                    
-                    # Extract text response
-                    response_text = ""
-                    if "messages" in result and len(result["messages"]) > 0:
-                        for message in result["messages"]:
-                            # Glean API may return 'GLEAN_AI' or 'ASSISTANT' as the author
-                            if message.get("author") in ["GLEAN_AI", "ASSISTANT"] and "fragments" in message:
-                                for fragment in message["fragments"]:
-                                    if "text" in fragment:
-                                        response_text += fragment["text"]
-                    
-                    # Create search result entry
-                    if response_text:
-                        search_results.append({
-                            "content": response_text,
-                            "query": query,
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                    
-                    # Add any documents referenced in the response
-                    if "documents" in result:
-                        for doc in result["documents"]:
-                            search_results.append({
-                                "title": doc.get("title", "Untitled"),
-                                "content": doc.get("content", ""),
-                                "url": doc.get("url", ""),
-                                "type": "document"
-                            })
-                    
-                    return search_results
-                else:
-                    logger.error(f"Search failed with status {response.status}")
-                    return []
-                    
-        except Exception as e:
-            logger.error(f"Error searching knowledge base: {str(e)}", exc_info=True)
-            return []
-
 
 # Singleton instance
 _ai_service_instance = None

@@ -79,7 +79,7 @@ pub async fn send_transcript_to_backend(
     include_context: bool,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(45))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     let url = format!("{}/process-realtime-transcript", BACKEND_SERVER_URL);
