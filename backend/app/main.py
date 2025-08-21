@@ -11,6 +11,14 @@ import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
+import os
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
+import tempfile
+from google import genai
 
 # Load environment variables
 load_dotenv()
@@ -616,6 +624,174 @@ async def search_transcripts(request: SearchRequest):
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def get_google_credentials():
+    """Get Google credentials using OAuth2 (personal account) or service account"""
+    # Scopes needed
+    SCOPES = [
+        'https://www.googleapis.com/auth/documents',
+        'https://www.googleapis.com/auth/drive',
+        'https://www.googleapis.com/auth/drive.file'
+    ]
+    
+    # Try OAuth2 first (easier for testing)
+    oauth_credentials_path = os.getenv('GOOGLE_OAUTH_CREDENTIALS_PATH')
+    token_file = 'token.pickle'
+    
+    if oauth_credentials_path and os.path.exists(oauth_credentials_path):
+        logger.info("Using OAuth2 credentials (personal account)")
+        creds = None
+        
+        # Check if we have saved credentials
+        if os.path.exists(token_file):
+            with open(token_file, 'rb') as token:
+                creds = pickle.load(token)
+        
+        # If no valid credentials, get new ones
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(oauth_credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+            
+            # Save credentials for future use
+            with open(token_file, 'wb') as token:
+                pickle.dump(creds, token)
+        
+        return creds
+    
+    # Fallback to service account
+    service_account_path = os.getenv('GOOGLE_SERVICE_ACCOUNT_PATH')
+    if service_account_path and os.path.exists(service_account_path):
+        logger.info("Using service account credentials")
+        return service_account.Credentials.from_service_account_file(service_account_path, scopes=SCOPES)
+    
+    return None
+
+def process_audio_with_genai(audio_content: bytes, filename: str) -> str:
+    """Process audio file with Google GenAI and return transcript"""
+    try:
+        # Get GenAI API key from environment
+        genai_api_key = os.getenv('GENAI_API_KEY')
+        if not genai_api_key:
+            logger.warning("GENAI_API_KEY not found in environment variables")
+            return "GenAI processing skipped: No API key configured"
+        
+        # Initialize GenAI client
+        client = genai.Client(api_key=genai_api_key)
+        logger.info("GenAI client initialized")
+        
+        # Create temporary file for the audio
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file.write(audio_content)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Upload file to GenAI
+            logger.info(f"Uploading audio file to GenAI: {filename}")
+            myfile = client.files.upload(file=temp_file_path)
+            logger.info(f"File uploaded to GenAI successfully")
+            
+            # Generate content with custom prompt (similar to temp.py)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash", 
+                contents=[
+                    "Generate a transcript of the speech. In the transcript, whenever someone says anything related to money, add this line: 'Gleany Glean'. Label different speakers as 'Speaker 1' and 'Speaker 2', extra custom text added in transcript should be labeled as 'Speaker Glean'.", 
+                    myfile
+                ]
+            )
+            
+            logger.info("GenAI processing completed successfully")
+            return response.text
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                logger.debug("Temporary audio file cleaned up")
+    
+    except Exception as e:
+        logger.error(f"Error processing audio with GenAI: {str(e)}")
+        return f"GenAI processing failed: {str(e)}"
+
+def create_google_doc(title: str, content: str):
+    """Create a Google Doc with the specified title and content"""
+    
+    # Simple fallback mode - just log the data instead of creating actual docs
+    if os.getenv('GOOGLE_DOCS_TEST_MODE') == 'true':
+        logger.info("=== GOOGLE DOCS TEST MODE ===")
+        logger.info(f"Would create Google Doc:")
+        logger.info(f"Title: {title}")
+        logger.info(f"Content: {content}")
+        logger.info("=============================")
+        return {
+            "document_id": "test-mode-doc-id",
+            "url": "https://docs.google.com/test-mode",
+            "title": title,
+            "test_mode": True
+        }
+    
+    try:
+        # Get credentials
+        credentials = get_google_credentials()
+        if not credentials:
+            logger.warning("No Google credentials found. Set GOOGLE_DOCS_TEST_MODE=true for testing.")
+            return None
+        
+        # Build services
+        docs_service = build('docs', 'v1', credentials=credentials)
+        drive_service = build('drive', 'v3', credentials=credentials)
+        
+        # Create a new document
+        document = {
+            'title': title
+        }
+        
+        doc = docs_service.documents().create(body=document).execute()
+        document_id = doc.get('documentId')
+        
+        logger.info(f"Created Google Doc with ID: {document_id}")
+        
+        # Add content to the document
+        requests = [
+            {
+                'insertText': {
+                    'location': {
+                        'index': 1,
+                    },
+                    'text': content
+                }
+            }
+        ]
+        
+        docs_service.documents().batchUpdate(
+            documentId=document_id,
+            body={'requests': requests}
+        ).execute()
+        
+        # Make the document public (optional)
+        try:
+            drive_service.permissions().create(
+                fileId=document_id,
+                body={'role': 'reader', 'type': 'anyone'}
+            ).execute()
+            logger.info("Made document publicly readable")
+        except Exception as perm_error:
+            logger.warning(f"Could not make document public: {perm_error}")
+        
+        doc_url = f"https://docs.google.com/document/d/{document_id}/edit"
+        logger.info(f"Google Doc created successfully: {doc_url}")
+        
+        return {
+            "document_id": document_id,
+            "url": doc_url,
+            "title": title
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to create Google Doc: {str(e)}")
+        return None
+
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
     """Upload audio file endpoint"""
@@ -633,16 +809,43 @@ async def upload_audio(file: UploadFile = File(...)):
         content = await file.read()
         logger.info(f"Successfully read {len(content)} bytes from audio file")
         
-        # Here you could save the file, process it, or store metadata in database
-        # For now, we'll just return success
+        # Process audio with GenAI to get transcript
+        logger.info("Processing audio with GenAI...")
+        genai_transcript = process_audio_with_genai(content, file.filename or "recording.wav")
         
-        return {
+        # Create Google Doc with GenAI transcript as content
+        doc_title = file.filename or "Audio Recording"
+        doc_content = f"""Audio Transcription
+
+File: {file.filename}
+Size: {len(content)} bytes
+Content Type: {file.content_type}
+Processed at: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+--- TRANSCRIPT ---
+{genai_transcript}
+"""
+        
+        google_doc_result = create_google_doc(doc_title, doc_content)
+        
+        response_data = {
             "success": True,
-            "message": "Audio file uploaded successfully",
+            "message": "Audio file uploaded and processed successfully",
             "filename": file.filename,
             "size": len(content),
-            "content_type": file.content_type
+            "content_type": file.content_type,
+            "transcript": genai_transcript[:500] + "..." if len(genai_transcript) > 500 else genai_transcript  # Include first 500 chars in response
         }
+        
+        # Add Google Doc info to response if creation was successful
+        if google_doc_result:
+            response_data["google_doc"] = google_doc_result
+            logger.info(f"Google Doc created for audio file with transcript: {google_doc_result['url']}")
+        else:
+            response_data["google_doc"] = None
+            logger.info("Google Doc creation skipped or failed")
+        
+        return response_data
         
     except Exception as e:
         logger.error(f"Error uploading audio file: {str(e)}", exc_info=True)
