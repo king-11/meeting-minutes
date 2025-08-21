@@ -1,5 +1,4 @@
-use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use serde::Deserialize;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
@@ -12,273 +11,47 @@ pub mod audio_monitor;
 pub mod console_utils;
 pub mod global_shortcut;
 pub mod ollama;
+pub mod transcription;
 pub mod tray;
 pub mod utils;
 pub mod window_manager;
 
+use crate::utils::resample_audio;
 use audio::{default_input_device, default_output_device, AudioStream};
 use log::{debug as log_debug, error as log_error, info as log_info};
-use reqwest::multipart::{Form, Part};
 use tauri::{AppHandle, Emitter, Listener, Runtime, WindowEvent};
-use utils::format_timestamp;
+
+// Import from transcription module
+use transcription::{AudioChunk, AudioQueue, TranscriptionStatus, TranscriptionWorker};
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
-static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CHUNK_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-static DROPPED_CHUNK_COUNTER: AtomicU64 = AtomicU64::new(0);
 static mut MIC_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
 static mut SYSTEM_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
-static mut AUDIO_CHUNK_QUEUE: Option<Arc<Mutex<VecDeque<AudioChunk>>>> = None;
+static mut AUDIO_CHUNK_QUEUE: Option<Arc<AudioQueue>> = None;
 static mut MIC_STREAM: Option<Arc<AudioStream>> = None;
 static mut SYSTEM_STREAM: Option<Arc<AudioStream>> = None;
 static mut IS_RUNNING: Option<Arc<AtomicBool>> = None;
 static mut RECORDING_START_TIME: Option<std::time::Instant> = None;
-static mut TRANSCRIPTION_TASK: Option<tokio::task::JoinHandle<()>> = None;
+static mut TRANSCRIPTION_WORKERS: Option<Vec<tokio::task::JoinHandle<()>>> = None;
 static mut AUDIO_COLLECTION_TASK: Option<tokio::task::JoinHandle<()>> = None;
 static mut ERROR_EVENT_EMITTED: bool = false;
-static LAST_TRANSCRIPTION_ACTIVITY: AtomicU64 = AtomicU64::new(0);
-static ACTIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
+use std::sync::LazyLock;
+
+static LAST_TRANSCRIPTION_ACTIVITY: LazyLock<Arc<AtomicU64>> =
+    LazyLock::new(|| Arc::new(AtomicU64::new(0)));
+static ACTIVE_WORKERS: LazyLock<Arc<AtomicU64>> = LazyLock::new(|| Arc::new(AtomicU64::new(0)));
 
 // Audio configuration constants
 const CHUNK_DURATION_MS: u32 = 30000; // 30 seconds per chunk for better sentence processing
 const WHISPER_SAMPLE_RATE: u32 = 16000; // Whisper's required sample rate
-const WAV_SAMPLE_RATE: u32 = 44100; // WAV file sample rate
-const WAV_CHANNELS: u16 = 2; // Stereo for WAV files
-const WHISPER_CHANNELS: u16 = 1; // Mono for Whisper API
-const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 second of silence
 const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
 const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
 const MAX_AUDIO_QUEUE_SIZE: usize = 10; // Maximum number of chunks in queue
 
-// Server configuration constants
-const TRANSCRIPT_SERVER_URL: &str = "http://127.0.0.1:8178";
-
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
     save_path: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct TranscriptionStatus {
-    chunks_in_queue: usize,
-    is_processing: bool,
-    last_activity_ms: u64,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct TranscriptUpdate {
-    text: String,
-    timestamp: String,
-    source: String,
-    sequence_id: u64,
-    chunk_start_time: f64,
-    is_partial: bool,
-}
-
-#[derive(Debug, Clone)]
-struct AudioChunk {
-    samples: Vec<f32>,
-    timestamp: f64,
-    chunk_id: u64,
-    start_time: std::time::Instant,
-    recording_start_time: std::time::Instant,
-}
-
-#[derive(Debug, Deserialize)]
-struct TranscriptSegment {
-    text: String,
-    t0: f32,
-    t1: f32,
-}
-
-#[derive(Debug, Deserialize)]
-struct TranscriptResponse {
-    segments: Vec<TranscriptSegment>,
-    buffer_size_ms: i32,
-}
-
-// Helper struct to accumulate transcript segments
-#[derive(Debug)]
-struct TranscriptAccumulator {
-    current_sentence: String,
-    sentence_start_time: f32,
-    last_update_time: std::time::Instant,
-    last_segment_hash: u64,
-    current_chunk_id: u64,
-    current_chunk_start_time: f64,
-    recording_start_time: Option<std::time::Instant>,
-}
-
-impl TranscriptAccumulator {
-    fn new() -> Self {
-        Self {
-            current_sentence: String::new(),
-            sentence_start_time: 0.0,
-            last_update_time: std::time::Instant::now(),
-            last_segment_hash: 0,
-            current_chunk_id: 0,
-            current_chunk_start_time: 0.0,
-            recording_start_time: None,
-        }
-    }
-
-    fn set_chunk_context(
-        &mut self,
-        chunk_id: u64,
-        chunk_start_time: f64,
-        recording_start_time: std::time::Instant,
-    ) {
-        self.current_chunk_id = chunk_id;
-        self.current_chunk_start_time = chunk_start_time;
-        // Store recording start time for calculating actual elapsed times
-        self.recording_start_time = Some(recording_start_time);
-    }
-
-    fn add_segment(&mut self, segment: &TranscriptSegment) -> Option<TranscriptUpdate> {
-        log_info!("Processing new transcript segment: {:?}", segment);
-
-        // Update the last update time
-        self.last_update_time = std::time::Instant::now();
-
-        // Clean up the text (remove [BLANK_AUDIO], [AUDIO OUT] and trim)
-        let clean_text = segment
-            .text
-            .replace("[BLANK_AUDIO]", "")
-            .replace("[AUDIO OUT]", "")
-            .trim()
-            .to_string();
-
-        if !clean_text.is_empty() {
-            log_info!("Clean transcript text: {}", clean_text);
-        }
-
-        // Skip empty segments or very short segments (less than 1 second)
-        if clean_text.is_empty() || (segment.t1 - segment.t0) < 1.0 {
-            return None;
-        }
-
-        // Calculate hash of this segment to detect duplicates
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        segment.text.hash(&mut hasher);
-        segment.t0.to_bits().hash(&mut hasher);
-        segment.t1.to_bits().hash(&mut hasher);
-        self.current_chunk_id.hash(&mut hasher); // Include chunk ID to avoid cross-chunk duplicates
-        let segment_hash = hasher.finish();
-
-        // Skip if this is a duplicate segment
-        if segment_hash == self.last_segment_hash {
-            log_info!("Skipping duplicate segment: {}", clean_text);
-            return None;
-        }
-        self.last_segment_hash = segment_hash;
-
-        // If this is the start of a new sentence, store the start time
-        if self.current_sentence.is_empty() {
-            self.sentence_start_time = segment.t0;
-        }
-
-        // Add the new text with proper spacing
-        if !self.current_sentence.is_empty() && !self.current_sentence.ends_with(' ') {
-            self.current_sentence.push(' ');
-        }
-        self.current_sentence.push_str(&clean_text);
-
-        // Check if we have a complete sentence (including common sentence endings)
-        let has_sentence_ending = clean_text.ends_with('.')
-            || clean_text.ends_with('?')
-            || clean_text.ends_with('!')
-            || clean_text.ends_with("...")
-            || clean_text.ends_with(".\"")
-            || clean_text.ends_with(".'");
-
-        if has_sentence_ending {
-            let sentence = std::mem::take(&mut self.current_sentence);
-            let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-            // Calculate actual elapsed time from recording start
-            let (start_elapsed, end_elapsed) =
-                if let Some(recording_start) = self.recording_start_time {
-                    // Calculate when this sentence actually started and ended relative to recording start
-                    let sentence_start_elapsed =
-                        self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                    let sentence_end_elapsed =
-                        self.current_chunk_start_time + (segment.t1 as f64 / 1000.0);
-                    (
-                        sentence_start_elapsed.max(0.0),
-                        sentence_end_elapsed.max(0.0),
-                    )
-                } else {
-                    // Fallback to chunk-relative times if recording start time not available
-                    let sentence_start_elapsed =
-                        self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                    let sentence_end_elapsed =
-                        self.current_chunk_start_time + (segment.t1 as f64 / 1000.0);
-                    (
-                        sentence_start_elapsed.max(0.0),
-                        sentence_end_elapsed.max(0.0),
-                    )
-                };
-
-            let update = TranscriptUpdate {
-                text: sentence.trim().to_string(),
-                timestamp: format!("{}", format_timestamp(start_elapsed)),
-                source: "Mixed Audio".to_string(),
-                sequence_id,
-                chunk_start_time: self.current_chunk_start_time,
-                is_partial: false,
-            };
-            log_info!("Generated transcript update: {:?}", update);
-            Some(update)
-        } else {
-            None
-        }
-    }
-
-    fn check_timeout(&mut self) -> Option<TranscriptUpdate> {
-        if !self.current_sentence.is_empty()
-            && self.last_update_time.elapsed() > Duration::from_millis(SENTENCE_TIMEOUT_MS)
-        {
-            let sentence = std::mem::take(&mut self.current_sentence);
-            let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-            // Calculate actual elapsed time from recording start for timeout
-            let (start_elapsed, end_elapsed) =
-                if let Some(recording_start) = self.recording_start_time {
-                    // For timeout, we know the sentence started at sentence_start_time and is timing out now
-                    let sentence_start_elapsed =
-                        self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                    let sentence_end_elapsed =
-                        sentence_start_elapsed + (SENTENCE_TIMEOUT_MS as f64 / 1000.0);
-                    (
-                        sentence_start_elapsed.max(0.0),
-                        sentence_end_elapsed.max(0.0),
-                    )
-                } else {
-                    // Fallback to chunk-relative times
-                    let sentence_start_elapsed =
-                        self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                    let sentence_end_elapsed =
-                        sentence_start_elapsed + (SENTENCE_TIMEOUT_MS as f64 / 1000.0);
-                    (
-                        sentence_start_elapsed.max(0.0),
-                        sentence_end_elapsed.max(0.0),
-                    )
-                };
-
-            let update = TranscriptUpdate {
-                text: sentence.trim().to_string(),
-                timestamp: format!("{}", format_timestamp(start_elapsed)),
-                source: "Mixed Audio".to_string(),
-                sequence_id,
-                chunk_start_time: self.current_chunk_start_time,
-                is_partial: true,
-            };
-            Some(update)
-        } else {
-            None
-        }
-    }
 }
 
 async fn audio_collection_task<R: Runtime>(
@@ -288,6 +61,7 @@ async fn audio_collection_task<R: Runtime>(
     sample_rate: u32,
     recording_start_time: std::time::Instant,
     app_handle: AppHandle<R>,
+    queue: Arc<AudioQueue>,
 ) -> Result<(), String> {
     log_info!("Audio collection task started");
 
@@ -396,43 +170,15 @@ async fn audio_collection_task<R: Runtime>(
                 recording_start_time,
             };
 
-            // Add to queue (with overflow protection)
-            unsafe {
-                if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-                    if let Ok(mut queue_guard) = queue.lock() {
-                        // Remove oldest chunks if queue is full
-                        while queue_guard.len() >= MAX_AUDIO_QUEUE_SIZE {
-                            if let Some(dropped_chunk) = queue_guard.pop_front() {
-                                let drop_count =
-                                    DROPPED_CHUNK_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
-                                log_info!("Dropped old audio chunk {} due to queue overflow (total drops: {})", dropped_chunk.chunk_id, drop_count);
+            // Add to queue using new AudioQueue
+            if let Some(dropped_chunk) = queue.push(audio_chunk) {
+                let drop_count = queue.dropped_count();
+                if drop_count == 1 {
+                    let warning_message = format!("Transcription process is very slow. Audio chunk {} was dropped. Please choose a smaller model, or run whisper natively.", dropped_chunk.chunk_id);
+                    log_info!("Emitting chunk-drop-warning event: {}", warning_message);
 
-                                // // Emit warning event every 10th drop
-                                // if drop_count % 10 == 0 {
-                                if drop_count == 1 {
-                                    let warning_message = format!("Transcription process is very slow. Audio chunk {} was dropped. Please choose a smaller model, or run whisper natively.", dropped_chunk.chunk_id);
-                                    log_info!(
-                                        "Emitting chunk-drop-warning event: {}",
-                                        warning_message
-                                    );
-
-                                    if let Err(e) =
-                                        app_handle.emit("chunk-drop-warning", &warning_message)
-                                    {
-                                        log_error!(
-                                            "Failed to emit chunk-drop-warning event: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        queue_guard.push_back(audio_chunk);
-                        log_info!(
-                            "Added chunk {} to queue (queue size: {})",
-                            chunk_id,
-                            queue_guard.len()
-                        );
+                    if let Err(e) = app_handle.emit("chunk-drop-warning", &warning_message) {
+                        log_error!("Failed to emit chunk-drop-warning event: {}", e);
                     }
                 }
             }
@@ -477,423 +223,46 @@ async fn audio_collection_task<R: Runtime>(
         };
 
         // Add final chunk to queue
-        unsafe {
-            if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-                if let Ok(mut queue_guard) = queue.lock() {
-                    queue_guard.push_back(audio_chunk);
-                    log_info!(
-                        "Added final chunk {} to queue (queue size: {})",
-                        chunk_id,
-                        queue_guard.len()
-                    );
-                }
-            }
-        }
+        queue.push(audio_chunk);
     }
 
     log_info!("Audio collection task ended");
     Ok(())
 }
 
-async fn send_audio_chunk(
-    chunk: Vec<f32>,
-    client: &reqwest::Client,
-    stream_url: &str,
-) -> Result<TranscriptResponse, String> {
-    log_debug!("Preparing to send audio chunk of size: {}", chunk.len());
+// Helper function to start transcription workers
+async fn start_transcription_workers<R: Runtime>(
+    app: AppHandle<R>,
+    queue: Arc<AudioQueue>,
+    is_running: Arc<AtomicBool>,
+    num_workers: usize,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut handles = Vec::new();
 
-    // Convert f32 samples to bytes
-    let bytes: Vec<u8> = chunk
-        .iter()
-        .flat_map(|&sample| {
-            let clamped = sample.max(-1.0).min(1.0);
-            clamped.to_le_bytes().to_vec()
-        })
-        .collect();
+    for worker_id in 0..num_workers {
+        let worker = TranscriptionWorker::new(worker_id);
+        let app_handle = app.clone();
+        let queue_clone = queue.clone();
+        let is_running_clone = is_running.clone();
+        let active_workers_clone = ACTIVE_WORKERS.clone();
+        let last_activity_clone = LAST_TRANSCRIPTION_ACTIVITY.clone();
 
-    // Retry configuration
-    let max_retries = 3;
-    let mut retry_count = 0;
-    let mut last_error = String::new();
-
-    while retry_count <= max_retries {
-        if retry_count > 0 {
-            // Exponential backoff: wait 2^retry_count * 100ms
-            let delay = Duration::from_millis(100 * (2_u64.pow(retry_count as u32)));
-            log::info!(
-                "Retry attempt {} of {}. Waiting {:?} before retry...",
-                retry_count,
-                max_retries,
-                delay
-            );
-            tokio::time::sleep(delay).await;
-        }
-
-        // Create fresh multipart form for each attempt since Form can't be reused
-        let part = Part::bytes(bytes.clone())
-            .file_name("audio.raw")
-            .mime_str("audio/x-raw")
-            .unwrap();
-        let form = Form::new().part("audio", part);
-
-        match client.post(stream_url).multipart(form).send().await {
-            Ok(response) => match response.json::<TranscriptResponse>().await {
-                Ok(transcript) => return Ok(transcript),
-                Err(e) => {
-                    last_error = e.to_string();
-                    log::error!("Failed to parse response: {}", last_error);
-                }
-            },
-            Err(e) => {
-                last_error = e.to_string();
-                log::error!("Request failed: {}", last_error);
-            }
-        }
-
-        retry_count += 1;
-    }
-
-    Err(format!(
-        "Failed after {} retries. Last error: {}",
-        max_retries, last_error
-    ))
-}
-
-async fn transcription_worker<R: Runtime>(
-    client: reqwest::Client,
-    stream_url: String,
-    app_handle: AppHandle<R>,
-    worker_id: usize,
-) {
-    log_info!("Transcription worker {} started", worker_id);
-    let mut accumulator = TranscriptAccumulator::new();
-
-    // Increment active worker count
-    ACTIVE_WORKERS.fetch_add(1, Ordering::SeqCst);
-
-    // Worker continues until both recording is stopped AND queue is empty
-    loop {
-        let is_running = unsafe {
-            if let Some(is_running) = &IS_RUNNING {
-                is_running.load(Ordering::SeqCst)
-            } else {
-                false
-            }
-        };
-
-        let queue_has_chunks = unsafe {
-            if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-                if let Ok(queue_guard) = queue.lock() {
-                    !queue_guard.is_empty()
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-
-        // Continue if recording is active OR if there are still chunks to process
-        if !is_running && !queue_has_chunks {
-            log_info!(
-                "Worker {}: Recording stopped and no more chunks to process, exiting",
-                worker_id
-            );
-            break;
-        }
-        // Check for timeout on current sentence
-        if let Some(update) = accumulator.check_timeout() {
-            log_info!(
-                "Worker {}: Emitting timeout transcript-update event with sequence_id: {}",
-                worker_id,
-                update.sequence_id
-            );
-
-            if let Err(e) = app_handle.emit("transcript-update", &update) {
-                log_error!(
-                    "Worker {}: Failed to send timeout transcript update: {}",
-                    worker_id,
-                    e
-                );
-            } else {
-                log_info!(
-                    "Worker {}: Successfully emitted timeout transcript-update event",
-                    worker_id
-                );
-            }
-        }
-
-        // Try to get a chunk from the queue
-        let audio_chunk = unsafe {
-            if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-                if let Ok(mut queue_guard) = queue.lock() {
-                    queue_guard.pop_front()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(chunk) = audio_chunk {
-            log_info!(
-                "Worker {}: Processing chunk {} with {} samples",
-                worker_id,
-                chunk.chunk_id,
-                chunk.samples.len()
-            );
-
-            // Update last activity timestamp
-            LAST_TRANSCRIPTION_ACTIVITY.store(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-                Ordering::SeqCst,
-            );
-
-            // Set chunk context in accumulator
-            accumulator.set_chunk_context(
-                chunk.chunk_id,
-                chunk.timestamp,
-                chunk.recording_start_time,
-            );
-
-            // Send chunk for transcription
-            match send_audio_chunk(chunk.samples, &client, &stream_url).await {
-                Ok(response) => {
-                    log_info!(
-                        "Worker {}: Received {} transcript segments for chunk {}",
-                        worker_id,
-                        response.segments.len(),
-                        chunk.chunk_id
-                    );
-
-                    for segment in response.segments {
-                        log_info!(
-                            "Worker {}: Processing segment: {} ({} - {})",
-                            worker_id,
-                            segment.text.trim(),
-                            format_timestamp(segment.t0 as f64),
-                            format_timestamp(segment.t1 as f64)
-                        );
-
-                        // Add segment to accumulator and check for complete sentence
-                        if let Some(update) = accumulator.add_segment(&segment) {
-                            log_info!(
-                                "Worker {}: Emitting transcript-update event with sequence_id: {}",
-                                worker_id,
-                                update.sequence_id
-                            );
-
-                            // Emit the update
-                            if let Err(e) = app_handle.emit("transcript-update", &update) {
-                                log_error!(
-                                    "Worker {}: Failed to emit transcript update: {}",
-                                    worker_id,
-                                    e
-                                );
-                            } else {
-                                log_info!(
-                                    "Worker {}: Successfully emitted transcript-update event",
-                                    worker_id
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    log_error!(
-                        "Worker {}: Transcription error for chunk {}: {}",
-                        worker_id,
-                        chunk.chunk_id,
-                        e
-                    );
-
-                    // Handle error similar to original logic
-                    static mut ERROR_COUNT: u32 = 0;
-                    static mut LAST_ERROR_TIME: Option<std::time::Instant> = None;
-
-                    unsafe {
-                        let now = std::time::Instant::now();
-                        if let Some(last_time) = LAST_ERROR_TIME {
-                            if now.duration_since(last_time).as_secs() < 30 {
-                                ERROR_COUNT += 1;
-                            } else {
-                                ERROR_COUNT = 1;
-                            }
-                        } else {
-                            ERROR_COUNT = 1;
-                        }
-                        LAST_ERROR_TIME = Some(now);
-
-                        if ERROR_COUNT == 1 && !ERROR_EVENT_EMITTED {
-                            log_error!(
-                                "Worker {}: Too many transcription errors, stopping recording",
-                                worker_id
-                            );
-                            let error_msg = if e.contains("Failed to connect")
-                                || e.contains("Connection refused")
-                            {
-                                "Transcription service is not available. Please check if the server is running.".to_string()
-                            } else if e.contains("timeout") {
-                                "Transcription service is not responding. Please check your connection.".to_string()
-                            } else {
-                                format!("Transcription service error: {}", e)
-                            };
-
-                            if let Err(emit_err) = app_handle.emit("transcript-error", error_msg) {
-                                log_error!(
-                                    "Worker {}: Failed to emit transcript error: {}",
-                                    worker_id,
-                                    emit_err
-                                );
-                            }
-
-                            ERROR_EVENT_EMITTED = true;
-                            RECORDING_FLAG.store(false, Ordering::SeqCst);
-                            if let Some(is_running) = &IS_RUNNING {
-                                is_running.store(false, Ordering::SeqCst);
-                            }
-                            ERROR_COUNT = 0;
-                            LAST_ERROR_TIME = None;
-
-                            // Clean up audio streams when stopping due to errors
-                            tokio::spawn(async {
-                                unsafe {
-                                    // Stop mic stream if it exists
-                                    if let Some(mic_stream) = &MIC_STREAM {
-                                        log_info!("Cleaning up microphone stream after transcription error...");
-                                        if let Err(e) = mic_stream.stop().await {
-                                            log_error!("Error stopping mic stream: {}", e);
-                                        } else {
-                                            log_info!("Microphone stream cleaned up successfully");
-                                        }
-                                    }
-
-                                    // Stop system stream if it exists
-                                    if let Some(system_stream) = &SYSTEM_STREAM {
-                                        log_info!("Cleaning up system stream after transcription error...");
-                                        if let Err(e) = system_stream.stop().await {
-                                            log_error!("Error stopping system stream: {}", e);
-                                        } else {
-                                            log_info!("System stream cleaned up successfully");
-                                        }
-                                    }
-
-                                    // Clear the stream references
-                                    MIC_STREAM = None;
-                                    SYSTEM_STREAM = None;
-                                    IS_RUNNING = None;
-                                    TRANSCRIPTION_TASK = None;
-                                    AUDIO_COLLECTION_TASK = None;
-                                    AUDIO_CHUNK_QUEUE = None;
-                                }
-                            });
-
-                            return;
-                        }
-                    }
-                }
-            }
-        } else {
-            // No chunks available, sleep briefly
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    // Emit any remaining transcript when worker stops
-    if let Some(update) = accumulator.check_timeout() {
-        log_info!(
-            "Worker {}: Emitting final transcript-update event with sequence_id: {}",
-            worker_id,
-            update.sequence_id
-        );
-
-        if let Err(e) = app_handle.emit("transcript-update", &update) {
-            log_error!(
-                "Worker {}: Failed to send final transcript update: {}",
-                worker_id,
-                e
-            );
-        } else {
-            log_info!(
-                "Worker {}: Successfully emitted final transcript-update event",
-                worker_id
-            );
-        }
-    }
-
-    // Also flush any partial sentence that might not have been emitted
-    if !accumulator.current_sentence.is_empty() {
-        let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let update = TranscriptUpdate {
-            text: accumulator.current_sentence.trim().to_string(),
-            timestamp: format!(
-                "{}",
-                format_timestamp(
-                    accumulator.current_chunk_start_time
-                        + (accumulator.sentence_start_time as f64 / 1000.0)
+        let handle = tokio::spawn(async move {
+            worker
+                .run(
+                    app_handle,
+                    queue_clone,
+                    is_running_clone,
+                    active_workers_clone,
+                    last_activity_clone,
                 )
-            ),
-            source: "Mixed Audio".to_string(),
-            sequence_id,
-            chunk_start_time: accumulator.current_chunk_start_time,
-            is_partial: true,
-        };
-        log_info!(
-            "Worker {}: Flushing final partial sentence: {} with sequence_id: {}",
-            worker_id,
-            update.text,
-            update.sequence_id
-        );
+                .await;
+        });
 
-        if let Err(e) = app_handle.emit("transcript-update", &update) {
-            log_error!(
-                "Worker {}: Failed to send final partial transcript: {}",
-                worker_id,
-                e
-            );
-        } else {
-            log_info!(
-                "Worker {}: Successfully emitted final partial transcript-update event",
-                worker_id
-            );
-        }
+        handles.push(handle);
     }
 
-    // Decrement active worker count
-    ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
-
-    // Check if this was the last active worker and emit completion event
-    if ACTIVE_WORKERS.load(Ordering::SeqCst) == 0 {
-        let should_emit = unsafe {
-            if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-                if let Ok(queue_guard) = queue.lock() {
-                    queue_guard.is_empty()
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-
-        if should_emit {
-            log_info!("All workers finished and queue is empty, waiting for pending segments...");
-
-            // Wait a bit to ensure all pending segments are emitted
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-            log_info!("Emitting transcription-complete event");
-            if let Err(e) = app_handle.emit("transcription-complete", ()) {
-                log_error!("Failed to emit transcription-complete event: {}", e);
-            }
-        }
-    }
-
-    log_info!("Transcription worker {} ended", worker_id);
+    handles
 }
 
 #[tauri::command]
@@ -922,9 +291,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         log_error!("Failed to emit recording-started event: {}", e);
     }
 
-    // Reset dropped chunk counter for new recording session
-    DROPPED_CHUNK_COUNTER.store(0, Ordering::SeqCst);
-    log_info!("Reset dropped chunk counter for new recording session");
+    // Reset dropped chunk counter for new recording session (handled by AudioQueue)
 
     // Stop any existing tasks first
     unsafe {
@@ -933,9 +300,11 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             task.abort();
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if let Some(task) = TRANSCRIPTION_TASK.take() {
-            log_info!("Stopping existing transcription task...");
-            task.abort();
+        if let Some(mut workers) = TRANSCRIPTION_WORKERS.take() {
+            log_info!("Stopping existing transcription workers...");
+            for worker in workers.drain(..) {
+                worker.abort();
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -959,10 +328,11 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     }
 
     // Initialize audio buffers and queue
+    let queue = Arc::new(AudioQueue::new(MAX_AUDIO_QUEUE_SIZE));
     unsafe {
         MIC_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
         SYSTEM_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
-        AUDIO_CHUNK_QUEUE = Some(Arc::new(Mutex::new(VecDeque::new())));
+        AUDIO_CHUNK_QUEUE = Some(queue.clone());
         log_info!("Initialized audio buffers and chunk queue");
     }
 
@@ -1004,13 +374,6 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         IS_RUNNING = Some(is_running.clone());
     }
 
-    // Create HTTP client for transcription
-    let client = reqwest::Client::new();
-
-    // Use hardcoded transcript server URL
-    let stream_url = format!("{}/stream", TRANSCRIPT_SERVER_URL);
-    log_info!("Using hardcoded stream URL: {}", stream_url);
-
     let device_config = mic_stream.device_config.clone();
     let sample_rate = device_config.sample_rate().0;
     let channels = device_config.channels();
@@ -1027,6 +390,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         let system_stream_clone = system_stream.clone();
         let is_running_clone = is_running.clone();
         let app_handle_clone = app.clone();
+        let queue_clone = queue.clone();
         tokio::spawn(async move {
             if let Err(e) = audio_collection_task(
                 mic_stream_clone,
@@ -1035,6 +399,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 sample_rate,
                 recording_start_time,
                 app_handle_clone,
+                queue_clone,
             )
             .await
             {
@@ -1043,29 +408,16 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         })
     };
 
-    // Start multiple transcription workers
+    // Start transcription workers using the new module
     const NUM_WORKERS: usize = 3;
-    let mut worker_handles = Vec::new();
-
-    for worker_id in 0..NUM_WORKERS {
-        let client_clone = client.clone();
-        let stream_url_clone = stream_url.clone();
-        let app_handle_clone = app.clone();
-
-        let worker_handle = tokio::spawn(async move {
-            transcription_worker(client_clone, stream_url_clone, app_handle_clone, worker_id).await;
-        });
-
-        worker_handles.push(worker_handle);
-    }
+    let worker_handles =
+        start_transcription_workers(app.clone(), queue.clone(), is_running.clone(), NUM_WORKERS)
+            .await;
 
     // Store task handles globally
     unsafe {
         AUDIO_COLLECTION_TASK = Some(audio_collection_handle);
-        // Store the first worker as the main transcription task for compatibility
-        if let Some(first_worker) = worker_handles.into_iter().next() {
-            TRANSCRIPTION_TASK = Some(first_worker);
-        }
+        TRANSCRIPTION_WORKERS = Some(worker_handles);
     }
 
     Ok(())
@@ -1141,7 +493,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             }
 
             // Now wait for transcription workers to complete processing remaining chunks
-            if TRANSCRIPTION_TASK.is_some() {
+            if TRANSCRIPTION_WORKERS.is_some() {
                 log_info!("Waiting for transcription workers to complete...");
 
                 // Wait for all workers to finish processing remaining chunks
@@ -1151,16 +503,10 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
 
                 while wait_time < MAX_WAIT_TIME {
                     let active_count = ACTIVE_WORKERS.load(Ordering::SeqCst);
-                    let queue_size = unsafe {
-                        if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-                            if let Ok(queue_guard) = queue.lock() {
-                                queue_guard.len()
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
+                    let queue_size = if let Some(queue) = &AUDIO_CHUNK_QUEUE {
+                        queue.len()
+                    } else {
+                        0
                     };
 
                     log_info!(
@@ -1186,10 +532,12 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
                     );
                 }
 
-                // Now stop the transcription task
-                if let Some(task) = TRANSCRIPTION_TASK.take() {
-                    log_info!("Stopping transcription task...");
-                    task.abort();
+                // Now stop the transcription workers
+                if let Some(mut workers) = TRANSCRIPTION_WORKERS.take() {
+                    log_info!("Stopping transcription workers...");
+                    for worker in workers.drain(..) {
+                        worker.abort();
+                    }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }
@@ -1221,7 +569,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             MIC_STREAM = None;
             SYSTEM_STREAM = None;
             IS_RUNNING = None;
-            TRANSCRIPTION_TASK = None;
+            TRANSCRIPTION_WORKERS = None;
             // AUDIO_COLLECTION_TASK already taken and stopped above
             AUDIO_CHUNK_QUEUE = None;
 
@@ -1344,7 +692,6 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             return Err(err_msg);
         }
     }
-
     // Clean up
     unsafe {
         MIC_BUFFER = None;
@@ -1353,7 +700,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
         SYSTEM_STREAM = None;
         IS_RUNNING = None;
         RECORDING_START_TIME = None;
-        TRANSCRIPTION_TASK = None;
+        TRANSCRIPTION_WORKERS = None;
         AUDIO_COLLECTION_TASK = None;
         AUDIO_CHUNK_QUEUE = None;
     }
@@ -1397,11 +744,7 @@ async fn toggle_recording<R: Runtime>(app: AppHandle<R>) -> Result<bool, String>
 fn get_transcription_status() -> TranscriptionStatus {
     let chunks_in_queue = unsafe {
         if let Some(queue) = &AUDIO_CHUNK_QUEUE {
-            if let Ok(queue_guard) = queue.lock() {
-                queue_guard.len()
-            } else {
-                0
-            }
+            queue.len()
         } else {
             0
         }
@@ -1549,24 +892,4 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-// Helper function to resample audio
-fn resample_audio(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate {
-        return samples.to_vec();
-    }
-
-    let ratio = to_rate as f32 / from_rate as f32;
-    let new_len = (samples.len() as f32 * ratio) as usize;
-    let mut resampled = Vec::with_capacity(new_len);
-
-    for i in 0..new_len {
-        let src_idx = (i as f32 / ratio) as usize;
-        if src_idx < samples.len() {
-            resampled.push(samples[src_idx]);
-        }
-    }
-
-    resampled
 }
