@@ -45,10 +45,12 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                     if button == MouseButton::Left {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
+                                if let Err(e) = window.hide() {
+                                    log::error!("Failed to hide window on tray click: {}", e);
+                                }
                             } else {
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                                // Use the same activation logic as menu items
+                                activate_and_show_window(tray.app_handle(), "main", None);
                             }
                         }
                     }
@@ -68,24 +70,57 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             toggle_recording(app, !is_recording);
         }
         "open_window" => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            } else {
-                log::warn!("Could not find main window");
-            }
+            activate_and_show_window(app, "main", None);
         }
         "settings" => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.eval("window.location.href = '/settings'");
-            }
+            activate_and_show_window(app, "main", Some("window.location.href = '/settings'"));
         }
         "quit" => {
             app.exit(0);
         }
         _ => {}
+    }
+}
+
+// Helper function to properly activate app and show window
+fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, eval_script: Option<&str>) {
+    // First, activate the app (bring to foreground on macOS)
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = app.show() {
+            log::error!("Failed to activate app: {}", e);
+        }
+    }
+    
+    // Then show the window
+    if let Some(window) = app.get_webview_window(window_label) {
+        // Unminimize if minimized
+        if let Ok(is_minimized) = window.is_minimized() {
+            if is_minimized {
+                if let Err(e) = window.unminimize() {
+                    log::error!("Failed to unminimize window: {}", e);
+                }
+            }
+        }
+        
+        // Show the window
+        if let Err(e) = window.show() {
+            log::error!("Failed to show window: {}", e);
+        }
+        
+        // Set focus to the window
+        if let Err(e) = window.set_focus() {
+            log::error!("Failed to set focus: {}", e);
+        }
+        
+        // Execute any eval script if provided
+        if let Some(script) = eval_script {
+            if let Err(e) = window.eval(script) {
+                log::error!("Failed to execute script: {}", e);
+            }
+        }
+    } else {
+        log::warn!("Could not find window with label: {}", window_label);
     }
 }
 
