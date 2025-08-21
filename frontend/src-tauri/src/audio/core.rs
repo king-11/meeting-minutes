@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{fmt, thread};
 use tokio::sync::{broadcast, oneshot};
 lazy_static! {

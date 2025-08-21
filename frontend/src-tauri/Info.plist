@@ -4,7 +4,5 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>This application needs access to your microphone to record meeting audio.</string>
-    <key>LSUIElement</key>
-    <true/>
 </dict>
 </plist>

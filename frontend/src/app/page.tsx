@@ -500,41 +500,11 @@ export default function Home() {
       // Stop recording and save audio
       await invoke('stop_recording', { 
         args: { 
-          save_path: audioPath
+          save_path: audioPath,
+          model_config: modelConfig
         }
       });
       console.log('Recording stopped successfully');
-
-      // Upload the audio file to the backend
-      try {
-        console.log('Uploading audio file to backend...');
-        const { readFile } = await import('@tauri-apps/plugin-fs');
-        const fileData = await readFile(audioPath);
-        
-        // Get filename from path
-        const fileName = audioPath.split('/').pop() || 'recording.wav';
-        
-        // Create FormData for file upload
-        const formData = new FormData();
-        const blob = new Blob([fileData], { type: 'audio/wav' });
-        formData.append('file', blob, fileName);
-        
-        // Upload to backend
-        const response = await fetch('http://localhost:5167/upload-audio', {
-          method: 'POST',
-          body: formData,
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          console.log('Audio file uploaded successfully:', result);
-        } else {
-          console.error('Failed to upload audio file:', response.status, response.statusText);
-        }
-      } catch (uploadError) {
-        console.error('Error uploading audio file:', uploadError);
-        // Don't fail the entire operation if upload fails
-      }
 
       // Format and save transcript
       const formattedTranscript = transcripts
@@ -1144,7 +1114,7 @@ export default function Home() {
       )}
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
-        <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
+        <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-background flex flex-col relative">
           {/* Title area */}
           <div className="p-4 border-b border-gray-200">
             <div className="flex flex-col space-y-3">
@@ -1290,7 +1260,7 @@ export default function Home() {
 
           {/* Recording controls */}
           <div className="absolute bottom-16 left-1/2 transform -translate-x-1/2 z-10">
-            <div className="bg-white rounded-full shadow-lg flex items-center">
+            <div className="bg-card rounded-full shadow-lg flex items-center">
               <RecordingControls
                 isRecording={isRecording}
                 onRecordingStop={(callApi = true) => handleRecordingStop2(callApi)}
@@ -1308,13 +1278,13 @@ export default function Home() {
 
           {/* Processing status overlay */}
           {summaryStatus === 'processing' && !isRecording && (
-            <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2 z-10 bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
+            <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2 z-10 bg-card rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
               <span className="text-sm text-gray-700">Finalizing transcription...</span>
             </div>
           )}
           {isSavingTranscript && (
-            <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2 z-10 bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
+            <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2 z-10 bg-card rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
               <span className="text-sm text-gray-700">Saving transcript...</span>
             </div>
@@ -1413,7 +1383,7 @@ export default function Home() {
         </div>
 
         {/* Right side - AI Summary */}
-        <div className="flex-1 overflow-y-auto bg-white">
+        <div className="flex-1 overflow-y-auto bg-background">
           <div className="p-4 border-b border-gray-200">
             <div className="flex items-center">
               <EditableTitle

@@ -330,7 +330,16 @@ const Sidebar: React.FC = () => {
         <button
           onClick={handleRecordingToggle}
           disabled={isRecording}
-          className={`p-2 ${isRecording ? 'bg-red-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-full transition-colors shadow-sm`}
+          className={`p-2 ${isRecording ? 'cursor-not-allowed' : ''} rounded-full transition-colors shadow-sm`}
+          style={{ backgroundColor: '#343CED' }}
+          onMouseEnter={(e) => {
+            if (!isRecording) {
+              e.currentTarget.style.backgroundColor = '#2A31C8'
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = '#343CED'
+          }}
           title={isRecording ? "Recording in progress..." : "Start New Call"}
         >
           {isRecording ? (
@@ -538,7 +547,7 @@ const Sidebar: React.FC = () => {
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
+        className="absolute -right-6 top-20 z-50 p-1 bg-card hover:bg-muted rounded-full shadow-lg border"
         style={{ transform: 'translateX(50%)' }}
       >
         {isCollapsed ? (
@@ -549,7 +558,7 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div 
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${
+        className={`h-screen bg-background border-r shadow-sm flex flex-col transition-all duration-300 ${
           isCollapsed ? 'w-16' : 'w-64'
         }`}
       >
@@ -661,7 +670,18 @@ const Sidebar: React.FC = () => {
             <button
                 onClick={handleRecordingToggle}
                 disabled={isRecording}
-                className={`w-full flex items-center justify-center px-3 py-2 text-sm font-medium text-white ${isRecording ? 'bg-red-300 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-lg transition-colors shadow-sm`}
+                className={`w-full flex items-center justify-center px-3 py-2 text-sm font-medium text-white ${isRecording ? 'cursor-not-allowed' : ''} rounded-lg transition-colors shadow-sm`}
+                style={{ backgroundColor: isRecording ? '#8B9AEC' : '#343CED' }}
+                onMouseEnter={(e) => {
+                  if (!isRecording) {
+                    e.currentTarget.style.backgroundColor = '#2A31C8'
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isRecording) {
+                    e.currentTarget.style.backgroundColor = '#343CED'
+                  }
+                }}
               >
                 {isRecording ? (
                   <>

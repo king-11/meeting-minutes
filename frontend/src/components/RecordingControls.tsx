@@ -49,42 +49,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  const uploadAudioFile = async (filePath: string) => {
-    try {
-      console.log('Uploading audio file to backend...');
-      
-      // Read file using Tauri's file system
-      const { readFile } = await import('@tauri-apps/plugin-fs');
-      const fileData = await readFile(filePath);
-      console.log('File read successfully, size:', fileData.length, 'bytes');
-      
-      // Get filename from path
-      const fileName = filePath.split('/').pop() || 'recording.wav';
-      
-      // Create FormData for file upload
-      const formData = new FormData();
-      const blob = new Blob([fileData], { type: 'audio/wav' });
-      formData.append('file', blob, fileName);
-      
-      // Upload to backend
-      const response = await fetch('http://localhost:5167/upload-audio', {
-        method: 'POST',
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
-      }
-      
-      const result = await response.json();
-      console.log('Audio file uploaded successfully:', result.message);
-      return result;
-    } catch (error) {
-      console.error('Error uploading audio file:', error);
-      throw error;
-    }
-  };
-
   useEffect(() => {
     const checkTauri = async () => {
       try {
@@ -119,7 +83,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   }, [onRecordingStart, isStarting]);
 
   const stopRecordingAction = useCallback(async () => {
-    console.log('Stopping recording and saving audio file...');
+    console.log('Executing stop recording...');
     try {
       setIsProcessing(true);
       const dataDir = await appDataDir();
@@ -135,15 +99,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       
       setRecordingPath(savePath);
       // setShowPlayback(true);
-      
-      // Upload the audio file to the backend
-      try {
-        await uploadAudioFile(savePath);
-      } catch (uploadError) {
-        console.error('Failed to upload audio file:', uploadError);
-        // Don't fail the entire operation if upload fails
-      }
-      
       setIsProcessing(false);
       
       // Track successful transcription
@@ -178,6 +133,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const handleStopRecording = useCallback(async () => {
     if (!isRecording || isStarting || isStopping) return;
     
+    console.log('Stopping recording...');
     setIsStopping(true);
     
     // Immediately trigger the stop action
@@ -235,7 +191,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     return (
     <div className="flex flex-col space-y-2">
-      <div className="flex items-center space-x-2 bg-white rounded-full shadow-lg px-4 py-2">
+      <div className="flex items-center space-x-2 bg-card rounded-full shadow-lg px-4 py-2">
         {isProcessing ? (
           <div className="flex items-center space-x-2">
             <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900"></div>
@@ -247,7 +203,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               <>
                 <button
                   onClick={handleStartRecording}
-                  className="w-10 h-10 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
+                  className="w-10 h-10 flex items-center justify-center rounded-full text-white transition-colors"
+                  style={{ backgroundColor: '#343CED' }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2A31C8'}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#343CED'}
                 >
                   <Mic size={16} />
                 </button>
@@ -292,8 +251,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                   }}
                   disabled={isStarting || isProcessing || isStopping || isRecordingDisabled}
                   className={`w-12 h-12 flex items-center justify-center ${
-                    isStarting || isProcessing || isStopping ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
+                    isStarting || isProcessing || isStopping ? 'bg-gray-400' : ''
                   } rounded-full text-white transition-colors relative`}
+                  style={
+                    isStarting || isProcessing || isStopping 
+                      ? {} 
+                      : { backgroundColor: '#343CED' }
+                  }
+                  onMouseEnter={(e) => {
+                    if (!isStarting && !isProcessing && !isStopping) {
+                      e.currentTarget.style.backgroundColor = '#2A31C8'
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isStarting && !isProcessing && !isStopping) {
+                      e.currentTarget.style.backgroundColor = '#343CED'
+                    }
+                  }}
 
                 >
                   {isRecording ? (
@@ -314,8 +288,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                   {barHeights.map((height, index) => (
                     <div
                       key={index}
-                      className="w-1 bg-red-500 rounded-full transition-all duration-200"
+                      className="w-1 rounded-full transition-all duration-200"
                       style={{
+                        backgroundColor: '#343CED',
                         height: isRecording ? height : '4px',
                       }}
                     />

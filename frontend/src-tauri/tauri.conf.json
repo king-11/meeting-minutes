@@ -13,26 +13,12 @@
     "app": {
         "windows": [{
             "title": "meetily",
-            "label": "main",
             "width": 1200,
             "height": 800,
             "resizable": true,
             "fullscreen": false,
             "theme": "Light",
             "decorations": true
-        }, {
-            "title": "",
-            "label": "floating",
-            "url": "/floating",
-            "width": 220,
-            "height": 90,
-            "resizable": false,
-            "alwaysOnTop": true,
-            "decorations": false,
-            "transparent": true,
-            "skipTaskbar": true,
-            "visible": false,
-            "center": true
         }],
         "macOSPrivateApi": true,
         "security": {
@@ -69,14 +55,7 @@
                     "core:menu:default",
                     "core:tray:default",
                     "core:window:allow-set-title",
-                    "core:window:allow-show",
-                    "core:window:allow-hide",
-                    "core:window:allow-close",
-                    "core:window:allow-set-position",
-                    "core:window:allow-set-always-on-top",
-                    "core:window:allow-set-focus",
                     "store:default",
-                    "global-shortcut:default",
                     {
                         "identifier": "fs:scope",
                         "allow": [{ "path": "$APPDATA/*" }]
@@ -92,10 +71,6 @@
             "icons/icon.png",
             "icons/app_icon.icns",
             "icons/app_icon.ico"
-        ],
-        "macOS": {
-            "minimumSystemVersion": "10.15",
-            "exceptionDomain": ""
-        }
+        ]
     }
 }
