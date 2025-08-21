@@ -1,4 +1,3 @@
-use std::fs;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 use std::time::Duration;
 use std::collections::VecDeque;
@@ -6,24 +5,24 @@ use serde::{Deserialize, Serialize};
 
 // Declare audio module
 pub mod audio;
+pub mod audio_monitor;
+pub mod global_shortcut;
 pub mod ollama;
 pub mod analytics;
 pub mod api;
 pub mod utils;
 pub mod console_utils;
+pub mod tray;
+pub mod window_manager;
 
 use audio::{
-    default_input_device, default_output_device, AudioStream,
-    encode_single_audio,
+    default_input_device, default_output_device, AudioStream
 };
-use ollama::{OllamaModel};
 use analytics::{AnalyticsClient, AnalyticsConfig};
 use utils::format_timestamp;
-use tauri::{Runtime, AppHandle, Emitter};
-use tauri_plugin_store::StoreExt;
+use tauri::{Runtime, AppHandle, Emitter, Listener};
 use log::{info as log_info, error as log_error, debug as log_debug};
 use reqwest::multipart::{Form, Part};
-use tokio::sync::mpsc;
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -280,6 +279,14 @@ async fn audio_collection_task<R: Runtime>(
         // Get microphone samples
         while let Ok(chunk) = mic_receiver.try_recv() {
             log_debug!("Received {} mic samples", chunk.len());
+            
+            // Calculate and emit audio levels if monitoring is active
+            if audio_monitor::is_monitoring_active() {
+                if let Err(e) = audio_monitor::process_audio_with_levels(&chunk, &app_handle) {
+                    log_debug!("Failed to emit audio levels: {}", e);
+                }
+            }
+            
             mic_samples.extend(chunk);
         }
         
@@ -362,6 +369,40 @@ async fn audio_collection_task<R: Runtime>(
         
         // Small sleep to prevent busy waiting
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    
+    // Process any remaining audio in the buffer before exiting
+    if !current_chunk.is_empty() {
+        log_info!("Processing final audio chunk with {} samples before exiting", current_chunk.len());
+        
+        // Process chunk for Whisper API
+        let whisper_samples = if sample_rate != WHISPER_SAMPLE_RATE {
+            log_debug!("Resampling final audio from {} to {}", sample_rate, WHISPER_SAMPLE_RATE);
+            resample_audio(&current_chunk, sample_rate, WHISPER_SAMPLE_RATE)
+        } else {
+            current_chunk.clone()
+        };
+        
+        // Create final audio chunk
+        let chunk_id = CHUNK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let chunk_timestamp = chunk_start_time.elapsed().as_secs_f64();
+        let audio_chunk = AudioChunk {
+            samples: whisper_samples,
+            timestamp: chunk_timestamp,
+            chunk_id,
+            start_time: std::time::Instant::now(),
+            recording_start_time,
+        };
+        
+        // Add final chunk to queue
+        unsafe {
+            if let Some(queue) = &AUDIO_CHUNK_QUEUE {
+                if let Ok(mut queue_guard) = queue.lock() {
+                    queue_guard.push_back(audio_chunk);
+                    log_info!("Added final chunk {} to queue (queue size: {})", chunk_id, queue_guard.len());
+                }
+            }
+        }
     }
     
     log_info!("Audio collection task ended");
@@ -686,6 +727,23 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         log_error!("Recording already in progress");
         return Err("Recording already in progress".to_string());
     }
+    
+    // Start audio level monitoring
+    audio_monitor::start_level_monitoring();
+    
+    // Show floating window and emit start event
+    if let Err(e) = window_manager::show_floating_window(app.clone()).await {
+        log_error!("Failed to show floating window: {}", e);
+    }
+    
+    // Emit recording started events to floating window
+    // Emit both events to support both UI and global shortcut triggers
+    if let Err(e) = app.emit("start-recording-from-tray", ()) {
+        log_error!("Failed to emit start-recording-from-tray event: {}", e);
+    }
+    if let Err(e) = app.emit("recording-started", ()) {
+        log_error!("Failed to emit recording-started event: {}", e);
+    }
 
     // Reset dropped chunk counter for new recording session
     DROPPED_CHUNK_COUNTER.store(0, Ordering::SeqCst);
@@ -842,7 +900,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
+async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
     log_info!("Attempting to stop recording...");
     
     // Only check recording state if we haven't already started stopping
@@ -850,6 +908,27 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         log_info!("Recording is already stopped");
         return Ok(());
     }
+    
+    // Stop audio level monitoring
+    audio_monitor::stop_level_monitoring();
+    
+    // Emit recording stopped events to floating window
+    // Emit both events to support both UI and global shortcut triggers
+    if let Err(e) = app.emit("stop-recording-from-tray", ()) {
+        log_error!("Failed to emit stop-recording-from-tray event: {}", e);
+    }
+    if let Err(e) = app.emit("recording-stopped", ()) {
+        log_error!("Failed to emit recording-stopped event: {}", e);
+    }
+    
+    // Hide floating window after a delay to show confirmation
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Err(e) = window_manager::hide_floating_window(app_clone).await {
+            log_error!("Failed to hide floating window: {}", e);
+        }
+    });
 
     // Check minimum recording duration
     let elapsed_ms = unsafe {
@@ -875,14 +954,18 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
             is_running.store(false, Ordering::SeqCst);
             log_info!("Set recording flag to false, waiting for streams to stop...");
             
-            // Stop the audio collection task
+            // Wait for the audio collection task to finish adding its final chunk
             if let Some(task) = AUDIO_COLLECTION_TASK.take() {
-                log_info!("Stopping audio collection task...");
+                log_info!("Waiting for audio collection task to finish processing final buffer...");
+                // Give it time to process and add final chunk
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Then abort if it's still running
                 task.abort();
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                log_info!("Audio collection task has been stopped");
             }
             
-            // Wait for transcription workers to complete processing remaining chunks
+            // Now wait for transcription workers to complete processing remaining chunks
             if TRANSCRIPTION_TASK.is_some() {
                 log_info!("Waiting for transcription workers to complete...");
                 
@@ -957,7 +1040,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
             SYSTEM_STREAM = None;
             IS_RUNNING = None;
             TRANSCRIPTION_TASK = None;
-            AUDIO_COLLECTION_TASK = None;
+            // AUDIO_COLLECTION_TASK already taken and stopped above
             AUDIO_CHUNK_QUEUE = None;
             
             // Give streams time to fully clean up
@@ -1102,6 +1185,35 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
 #[tauri::command]
 fn is_recording() -> bool {
     RECORDING_FLAG.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+async fn toggle_recording<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    if is_recording() {
+        // Stop recording and save to default location
+        // Get the downloads directory or app data directory
+        let save_path = if let Some(download_dir) = dirs::download_dir() {
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            let filename = format!("recording_{}.wav", timestamp);
+            download_dir.join(filename).to_string_lossy().to_string()
+        } else {
+            // Fallback to app data directory
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            format!("recording_{}.wav", timestamp)
+        };
+        
+        log_info!("Saving recording to: {}", save_path);
+        
+        let args = RecordingArgs {
+            save_path,
+        };
+        stop_recording(app, args).await?;
+        Ok(false)
+    } else {
+        // Start recording
+        start_recording(app).await?;
+        Ok(true)
+    }
 }
 
 #[tauri::command]
@@ -1433,8 +1545,29 @@ pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
     
     tauri::Builder::default()
-        .setup(|_app| {
+        .setup(|app| {
             log::info!("Application setup complete");
+
+            // Initialize system tray
+            if let Err(e) = tray::create_tray(app.handle()) {
+                log::error!("Failed to create system tray: {}", e);
+            }
+
+            // Register global shortcut
+            if let Err(e) = global_shortcut::register_recording_shortcut(app.handle()) {
+                log::error!("Failed to register global shortcut: {}", e);
+            }
+
+            // Listen for shortcut toggle event
+            let app_handle = app.handle().clone();
+            app.listen("toggle-recording-shortcut", move |_event| {
+                let app_clone = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = toggle_recording(app_clone).await {
+                        log::error!("Failed to toggle recording: {}", e);
+                    }
+                });
+            });
 
             // Trigger microphone permission request on startup
             if let Err(e) = audio::core::trigger_audio_permission() {
@@ -1446,6 +1579,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
+            toggle_recording,
             is_recording,
             get_transcription_status,
             read_audio_file,
@@ -1498,9 +1632,20 @@ pub fn run() {
             console_utils::show_console,
             console_utils::hide_console,
             console_utils::toggle_console,
+            window_manager::show_floating_window,
+            window_manager::hide_floating_window,
+            window_manager::save_window_position,
+            window_manager::get_window_position,
+            window_manager::toggle_recording_with_ui_feedback,
         ])
         .plugin(tauri_plugin_store::Builder::new().build())
-        .run(tauri::generate_context!())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    
+    // Only include devtools in debug builds
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_devtools::init());
+    
+    builder.run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
