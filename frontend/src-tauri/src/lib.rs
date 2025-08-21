@@ -1,5 +1,7 @@
-use std::fs;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
@@ -11,6 +13,7 @@ pub mod analytics;
 pub mod api;
 pub mod utils;
 pub mod console_utils;
+pub mod transcription;
 
 use audio::{
     default_input_device, default_output_device, AudioStream,
@@ -19,6 +22,10 @@ use audio::{
 use ollama::{OllamaModel};
 use analytics::{AnalyticsClient, AnalyticsConfig};
 use utils::format_timestamp;
+use transcription::{
+    AudioChunk, TranscriptAccumulator, AudioQueue, TranscriptSegment,
+    TranscriptUpdate, TranscriptResponse, TranscriptionStatus, TranscriptionWorker,
+};
 use tauri::{Runtime, AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 use log::{info as log_info, error as log_error, debug as log_debug};
@@ -55,199 +62,81 @@ const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
 const MAX_AUDIO_QUEUE_SIZE: usize = 10; // Maximum number of chunks in queue
 
 // Server configuration constants
-const TRANSCRIPT_SERVER_URL: &str = "http://127.0.0.1:8178";
+const BACKEND_SERVER_URL: &str = "http://localhost:5167";
+
+// Global meeting ID for current recording session
+pub static mut CURRENT_MEETING_ID: Option<String> = None;
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
     save_path: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct TranscriptionStatus {
-    chunks_in_queue: usize,
-    is_processing: bool,
-    last_activity_ms: u64,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct TranscriptUpdate {
-    text: String,
-    timestamp: String,
-    source: String,
-    sequence_id: u64,
-    chunk_start_time: f64,
-    is_partial: bool,
-}
-
-#[derive(Debug, Clone)]
-struct AudioChunk {
-    samples: Vec<f32>,
-    timestamp: f64,
-    chunk_id: u64,
-    start_time: std::time::Instant,
-    recording_start_time: std::time::Instant,
-}
-
-#[derive(Debug, Deserialize)]
-struct TranscriptSegment {
-    text: String,
-    t0: f32,
-    t1: f32,
-}
-
-#[derive(Debug, Deserialize)]
-struct TranscriptResponse {
-    segments: Vec<TranscriptSegment>,
-    buffer_size_ms: i32,
-}
-
-// Helper struct to accumulate transcript segments
-#[derive(Debug)]
-struct TranscriptAccumulator {
-    current_sentence: String,
-    sentence_start_time: f32,
-    last_update_time: std::time::Instant,
-    last_segment_hash: u64,
-    current_chunk_id: u64,
-    current_chunk_start_time: f64,
-    recording_start_time: Option<std::time::Instant>,
-}
-
-impl TranscriptAccumulator {
-    fn new() -> Self {
-        Self {
-            current_sentence: String::new(),
-            sentence_start_time: 0.0,
-            last_update_time: std::time::Instant::now(),
-            last_segment_hash: 0,
-            current_chunk_id: 0,
-            current_chunk_start_time: 0.0,
-            recording_start_time: None,
-        }
+// Function to send transcript chunk to backend for AI processing
+pub async fn send_transcript_to_backend(
+    meeting_id: &str,
+    transcript_chunk: &str,
+    include_context: bool,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let url = format!("{}/process-realtime-transcript", BACKEND_SERVER_URL);
+    
+    #[derive(Serialize)]
+    struct RealtimeTranscriptRequest {
+        meeting_id: String,
+        transcript_chunk: String,
+        include_context: bool,
     }
-
-    fn set_chunk_context(&mut self, chunk_id: u64, chunk_start_time: f64, recording_start_time: std::time::Instant) {
-        self.current_chunk_id = chunk_id;
-        self.current_chunk_start_time = chunk_start_time;
-        // Store recording start time for calculating actual elapsed times
-        self.recording_start_time = Some(recording_start_time);
+    
+    #[derive(Deserialize)]
+    struct BackendResponse {
+        status: String,
+        ai_response: Option<String>,
+        message: Option<String>,
     }
-
-    fn add_segment(&mut self, segment: &TranscriptSegment) -> Option<TranscriptUpdate> {
-        log_info!("Processing new transcript segment: {:?}", segment);
-        
-        // Update the last update time
-        self.last_update_time = std::time::Instant::now();
-
-        // Clean up the text (remove [BLANK_AUDIO], [AUDIO OUT] and trim)
-        let clean_text = segment.text
-            .replace("[BLANK_AUDIO]", "")
-            .replace("[AUDIO OUT]", "")
-            .trim()
-            .to_string();
-            
-        if !clean_text.is_empty() {
-            log_info!("Clean transcript text: {}", clean_text);
-        }
-
-        // Skip empty segments or very short segments (less than 1 second)
-        if clean_text.is_empty() || (segment.t1 - segment.t0) < 1.0 {
-            return None;
-        }
-
-        // Calculate hash of this segment to detect duplicates
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        segment.text.hash(&mut hasher);
-        segment.t0.to_bits().hash(&mut hasher);
-        segment.t1.to_bits().hash(&mut hasher);
-        self.current_chunk_id.hash(&mut hasher); // Include chunk ID to avoid cross-chunk duplicates
-        let segment_hash = hasher.finish();
-
-        // Skip if this is a duplicate segment
-        if segment_hash == self.last_segment_hash {
-            log_info!("Skipping duplicate segment: {}", clean_text);
-            return None;
-        }
-        self.last_segment_hash = segment_hash;
-
-        // If this is the start of a new sentence, store the start time
-        if self.current_sentence.is_empty() {
-            self.sentence_start_time = segment.t0;
-        }
-
-        // Add the new text with proper spacing
-        if !self.current_sentence.is_empty() && !self.current_sentence.ends_with(' ') {
-            self.current_sentence.push(' ');
-        }
-        self.current_sentence.push_str(&clean_text);
-
-        // Check if we have a complete sentence (including common sentence endings)
-        let has_sentence_ending = clean_text.ends_with('.') || clean_text.ends_with('?') || clean_text.ends_with('!') ||
-                                  clean_text.ends_with("...") || clean_text.ends_with(".\"") || clean_text.ends_with(".'");
-        
-        if has_sentence_ending {
-            let sentence = std::mem::take(&mut self.current_sentence);
-            let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-            
-            // Calculate actual elapsed time from recording start
-            let (start_elapsed, end_elapsed) = if let Some(recording_start) = self.recording_start_time {
-                // Calculate when this sentence actually started and ended relative to recording start
-                let sentence_start_elapsed = self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                let sentence_end_elapsed = self.current_chunk_start_time + (segment.t1 as f64 / 1000.0);
-                (sentence_start_elapsed.max(0.0), sentence_end_elapsed.max(0.0))
+    
+    let request_body = RealtimeTranscriptRequest {
+        meeting_id: meeting_id.to_string(),
+        transcript_chunk: transcript_chunk.to_string(),
+        include_context,
+    };
+    
+    match client
+        .post(&url)
+        .json(&request_body)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<BackendResponse>().await {
+                    Ok(backend_resp) => {
+                        if let Some(ai_response) = backend_resp.ai_response {
+                            log_info!("Successfully received processed transcript from backend: {}", ai_response);
+                            Ok(ai_response.to_string())
+                        } else {
+                            log_error!("Backend response missing ai_response field");
+                            Err("Backend response missing ai_response".to_string())
+                        }
+                    }
+                    Err(e) => {
+                        log_error!("Failed to parse backend response: {}", e);
+                        Err(format!("Failed to parse response: {}", e))
+                    }
+                }
             } else {
-                // Fallback to chunk-relative times if recording start time not available
-                let sentence_start_elapsed = self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                let sentence_end_elapsed = self.current_chunk_start_time + (segment.t1 as f64 / 1000.0);
-                (sentence_start_elapsed.max(0.0), sentence_end_elapsed.max(0.0))
-            };
-            
-            let update = TranscriptUpdate {
-                text: sentence.trim().to_string(),
-                timestamp: format!("{}", format_timestamp(start_elapsed)),
-                source: "Mixed Audio".to_string(),
-                sequence_id,
-                chunk_start_time: self.current_chunk_start_time,
-                is_partial: false,
-            };
-            log_info!("Generated transcript update: {:?}", update);
-            Some(update)
-        } else {
-            None
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                log_error!("Backend returned error status {}: {}", status, error_text);
+                Err(format!("Backend error: {} - {}", status, error_text))
+            }
         }
-    }
-
-    fn check_timeout(&mut self) -> Option<TranscriptUpdate> {
-        if !self.current_sentence.is_empty() && 
-           self.last_update_time.elapsed() > Duration::from_millis(SENTENCE_TIMEOUT_MS) {
-            let sentence = std::mem::take(&mut self.current_sentence);
-            let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-            
-            // Calculate actual elapsed time from recording start for timeout
-            let (start_elapsed, end_elapsed) = if let Some(recording_start) = self.recording_start_time {
-                // For timeout, we know the sentence started at sentence_start_time and is timing out now
-                let sentence_start_elapsed = self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                let sentence_end_elapsed = sentence_start_elapsed + (SENTENCE_TIMEOUT_MS as f64 / 1000.0);
-                (sentence_start_elapsed.max(0.0), sentence_end_elapsed.max(0.0))
-            } else {
-                // Fallback to chunk-relative times
-                let sentence_start_elapsed = self.current_chunk_start_time + (self.sentence_start_time as f64 / 1000.0);
-                let sentence_end_elapsed = sentence_start_elapsed + (SENTENCE_TIMEOUT_MS as f64 / 1000.0);
-                (sentence_start_elapsed.max(0.0), sentence_end_elapsed.max(0.0))
-            };
-            
-            let update = TranscriptUpdate {
-                text: sentence.trim().to_string(),
-                timestamp: format!("{}", format_timestamp(start_elapsed)),
-                source: "Mixed Audio".to_string(),
-                sequence_id,
-                chunk_start_time: self.current_chunk_start_time,
-                is_partial: true,
-            };
-            Some(update)
-        } else {
-            None
+        Err(e) => {
+            log_error!("Failed to send transcript to backend: {}", e);
+            Err(format!("Network error: {}", e))
         }
     }
 }
@@ -324,7 +213,7 @@ async fn audio_collection_task<R: Runtime>(
                 timestamp: chunk_timestamp,
                 chunk_id,
                 start_time: std::time::Instant::now(),
-                recording_start_time,
+                recording_start_time: 0.0,  // This will be properly calculated from the timestamp
             };
             
             // Add to queue (with overflow protection)
@@ -511,18 +400,59 @@ async fn transcription_worker<R: Runtime>(
                              worker_id, response.segments.len(), chunk.chunk_id);
                     
                     for segment in response.segments {
-                        log_info!("Worker {}: Processing segment: {} ({} - {})", 
-                                 worker_id, segment.text.trim(), format_timestamp(segment.t0 as f64), format_timestamp(segment.t1 as f64));
+                        // Clean and validate segment text
+                        let clean_text = segment.text.clone();
                         
-                        // Add segment to accumulator and check for complete sentence
-                        if let Some(update) = accumulator.add_segment(&segment) {
-                            log_info!("Worker {}: Emitting transcript-update event with sequence_id: {}", worker_id, update.sequence_id);
-                            
-                            // Emit the update
-                            if let Err(e) = app_handle.emit("transcript-update", &update) {
-                                log_error!("Worker {}: Failed to emit transcript update: {}", worker_id, e);
+                        // Send segment to backend and use its response for display
+                        unsafe {
+                            if let Some(ref meeting_id) = CURRENT_MEETING_ID {
+                                let segment_start_elapsed = accumulator.current_chunk_start_time + (segment.t0 as f64 / 1000.0);
+                                
+                                log_info!("Sending segment to backend for processing: {}", clean_text);
+                                
+                                match send_transcript_to_backend(
+                                    &meeting_id,
+                                    &clean_text,
+                                    true, // include_context
+                                ).await {
+                                    Ok(processed_text) => {
+                                        // Backend has processed the transcript, now emit it for display
+                                        // let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+                                        
+                                        // let transcript_update = TranscriptUpdate {
+                                        //     text: processed_text.clone(),
+                                        //     timestamp: format!("{}", format_timestamp(segment_start_elapsed)),
+                                        //     source: "Mixed Audio".to_string(),
+                                        //     sequence_id,
+                                        //     chunk_start_time: segment_start_elapsed,
+                                        //     is_partial: false, // Mark as complete since it's been processed by backend
+                                        // };
+
+                                        log_info!("Emitting backend-processed transcript with sequence_id: {}", processed_text);
+                                        
+                                        // Create a new segment with the processed text and add to accumulator
+                                        let processed_segment = TranscriptSegment {
+                                            text: processed_text,
+                                            t0: segment.t0,
+                                            t1: segment.t1,
+                                        };
+                                        let transcript_update = accumulator.add_segment(&processed_segment);
+                                        
+                                        // Emit the processed transcript
+                                        app_handle.emit("transcript-update", &transcript_update).unwrap_or_else(|e| {
+                                            log_error!("Failed to emit transcript update: {}", e);
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log_error!("Failed to send transcript to backend: {}", e);
+                                        // If backend processing fails, fallback to original segment
+                                        accumulator.add_segment(&segment);
+                                    }
+                                }
                             } else {
-                                log_info!("Worker {}: Successfully emitted transcript-update event", worker_id);
+                                log_info!("No meeting ID available, skipping backend processing");
+                                // If no meeting ID, use original segment
+                                accumulator.add_segment(&segment);
                             }
                         }
                     }
@@ -633,7 +563,6 @@ async fn transcription_worker<R: Runtime>(
             timestamp: format!("{}", format_timestamp(accumulator.current_chunk_start_time + (accumulator.sentence_start_time as f64 / 1000.0))),
             source: "Mixed Audio".to_string(),
             sequence_id,
-            chunk_start_time: accumulator.current_chunk_start_time,
             is_partial: true,
         };
         log_info!("Worker {}: Flushing final partial sentence: {} with sequence_id: {}", worker_id, update.text, update.sequence_id);
@@ -687,9 +616,36 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         return Err("Recording already in progress".to_string());
     }
 
-    // Reset dropped chunk counter for new recording session
-    DROPPED_CHUNK_COUNTER.store(0, Ordering::SeqCst);
-    log_info!("Reset dropped chunk counter for new recording session");
+    // Generate a unique meeting ID for this recording session
+    unsafe {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        CURRENT_MEETING_ID = Some(format!("meeting-{}", timestamp));
+        log_info!("Generated meeting ID: {:?}", CURRENT_MEETING_ID);
+    }
+
+    // Start audio level monitoring
+    // TODO: Implement audio_monitor module
+    // audio_monitor::start_level_monitoring();
+
+    // Show floating window and emit start event
+    // TODO: Implement window_manager module
+    // if let Err(e) = window_manager::show_floating_window(app.clone()).await {
+    //     log_error!("Failed to show floating window: {}", e);
+    // }
+
+    // Emit recording started events to floating window
+    // Emit both events to support both UI and global shortcut triggers
+    if let Err(e) = app.emit("start-recording-from-tray", ()) {
+        log_error!("Failed to emit start-recording-from-tray event: {}", e);
+    }
+    if let Err(e) = app.emit("recording-started", ()) {
+        log_error!("Failed to emit recording-started event: {}", e);
+    }
+
+    // Reset dropped chunk counter for new recording session (handled by AudioQueue)
 
     // Stop any existing tasks first
     unsafe {
@@ -774,7 +730,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let client = reqwest::Client::new();
     
     // Use hardcoded transcript server URL
-    let stream_url = format!("{}/stream", TRANSCRIPT_SERVER_URL);
+    let stream_url = format!("{}/stream", transcription::worker::TRANSCRIPT_SERVER_URL);
     log_info!("Using hardcoded stream URL: {}", stream_url);
 
     let device_config = mic_stream.device_config.clone();
@@ -849,6 +805,12 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
     if !RECORDING_FLAG.load(Ordering::SeqCst) {
         log_info!("Recording is already stopped");
         return Ok(());
+    }
+    
+    // Clear the meeting ID
+    unsafe {
+        log_info!("Clearing meeting ID: {:?}", CURRENT_MEETING_ID);
+        CURRENT_MEETING_ID = None;
     }
 
     // Check minimum recording duration

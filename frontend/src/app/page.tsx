@@ -741,10 +741,13 @@ export default function Home() {
       text: update.text,
       timestamp: update.timestamp,
       sequence_id: update.sequence_id || 0,
+      is_partial: update.is_partial || false,
+      chunk_start_time: update.chunk_start_time,
     };
     
     setTranscripts(prev => {
       console.log('📊 Current transcripts count before update:', prev.length);
+      console.log('📊 Update is_partial:', update.is_partial);
       
       // Check if this transcript already exists
       const exists = prev.some(
@@ -763,7 +766,8 @@ export default function Home() {
       console.log('📝 Latest transcript:', {
         id: newTranscript.id,
         text: newTranscript.text.substring(0, 30) + '...',
-        sequence_id: newTranscript.sequence_id
+        sequence_id: newTranscript.sequence_id,
+        is_partial: newTranscript.is_partial
       });
       
       return sorted;
