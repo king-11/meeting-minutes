@@ -1,5 +1,5 @@
 use tauri::{
-    AppHandle, Manager, Runtime, Emitter,
+    AppHandle, Manager, Runtime, Emitter, WebviewUrl, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton},
 };
@@ -52,6 +52,10 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                                 // Use the same activation logic as menu items
                                 activate_and_show_window(tray.app_handle(), "main", None);
                             }
+                        } else {
+                            // Window doesn't exist, create and show it
+                            log::info!("Main window doesn't exist, creating new one");
+                            activate_and_show_window(tray.app_handle(), "main", None);
                         }
                     }
                 }
@@ -82,6 +86,41 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
     }
 }
 
+// Helper function to create main window if it doesn't exist
+fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    // Check if window already exists
+    if app.get_webview_window("main").is_some() {
+        return Ok(());
+    }
+    
+    log::info!("Creating new main window");
+    
+    // Create a new main window with the same configuration as in tauri.conf.json
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("meetily")
+        .inner_size(1200.0, 800.0)
+        .resizable(true)
+        .fullscreen(false)
+        .decorations(true)
+        .build()
+        .map_err(|e| {
+            log::error!("Failed to create main window: {}", e);
+            e.to_string()
+        })?;
+    
+    // Show the window
+    if let Err(e) = window.show() {
+        log::error!("Failed to show new main window: {}", e);
+    }
+    
+    // Set focus to the window
+    if let Err(e) = window.set_focus() {
+        log::error!("Failed to set focus to new main window: {}", e);
+    }
+    
+    Ok(())
+}
+
 // Helper function to properly activate app and show window
 fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, eval_script: Option<&str>) {
     // First, activate the app (bring to foreground on macOS)
@@ -89,6 +128,14 @@ fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, 
     {
         if let Err(e) = app.show() {
             log::error!("Failed to activate app: {}", e);
+        }
+    }
+    
+    // Check if window exists, if not and it's the main window, create it
+    if app.get_webview_window(window_label).is_none() && window_label == "main" {
+        if let Err(e) = create_main_window(app) {
+            log::error!("Failed to create main window: {}", e);
+            return;
         }
     }
     

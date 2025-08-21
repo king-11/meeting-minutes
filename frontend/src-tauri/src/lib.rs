@@ -19,7 +19,7 @@ pub mod window_manager;
 use audio::{default_input_device, default_output_device, AudioStream};
 use log::{debug as log_debug, error as log_error, info as log_info};
 use reqwest::multipart::{Form, Part};
-use tauri::{AppHandle, Emitter, Listener, Runtime};
+use tauri::{AppHandle, Emitter, Listener, Runtime, WindowEvent};
 use utils::format_timestamp;
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
@@ -1473,6 +1473,21 @@ pub fn run() {
             }
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    // If this is the main window, hide it instead of closing
+                    if window.label() == "main" {
+                        log::info!("Main window close requested, hiding instead of closing");
+                        api.prevent_close();
+                        if let Err(e) = window.hide() {
+                            log::error!("Failed to hide main window: {}", e);
+                        }
+                    }
+                }
+                _ => {}
+            }
         })
         .invoke_handler(tauri::generate_handler![
             start_recording,
