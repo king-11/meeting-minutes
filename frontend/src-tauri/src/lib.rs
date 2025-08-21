@@ -22,6 +22,8 @@ use reqwest::multipart::{Form, Part};
 use tauri::{AppHandle, Emitter, Listener, Runtime, WindowEvent};
 use utils::format_timestamp;
 
+use crate::utils::resample_audio;
+
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CHUNK_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1532,24 +1534,4 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-// Helper function to resample audio
-fn resample_audio(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate {
-        return samples.to_vec();
-    }
-
-    let ratio = to_rate as f32 / from_rate as f32;
-    let new_len = (samples.len() as f32 * ratio) as usize;
-    let mut resampled = Vec::with_capacity(new_len);
-
-    for i in 0..new_len {
-        let src_idx = (i as f32 / ratio) as usize;
-        if src_idx < samples.len() {
-            resampled.push(samples[src_idx]);
-        }
-    }
-
-    resampled
 }
