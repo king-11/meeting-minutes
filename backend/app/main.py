@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -615,6 +615,38 @@ async def search_transcripts(request: SearchRequest):
     except Exception as e:
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload-audio")
+async def upload_audio(file: UploadFile = File(...)):
+    """Upload audio file endpoint"""
+    try:
+        logger.info(f"Received audio file upload: {file.filename}")
+        logger.info(f"File size: {file.size} bytes")
+        logger.info(f"Content type: {file.content_type}")
+        
+        # Validate file type (optional - you can add more validation)
+        allowed_types = ["audio/wav", "audio/mp3", "audio/mpeg", "audio/x-wav", "application/octet-stream"]
+        if file.content_type not in allowed_types:
+            logger.warning(f"Unsupported file type: {file.content_type}")
+        
+        # Read file content (you can process it here if needed)
+        content = await file.read()
+        logger.info(f"Successfully read {len(content)} bytes from audio file")
+        
+        # Here you could save the file, process it, or store metadata in database
+        # For now, we'll just return success
+        
+        return {
+            "success": True,
+            "message": "Audio file uploaded successfully",
+            "filename": file.filename,
+            "size": len(content),
+            "content_type": file.content_type
+        }
+        
+    except Exception as e:
+        logger.error(f"Error uploading audio file: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to upload audio file: {str(e)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -500,11 +500,41 @@ export default function Home() {
       // Stop recording and save audio
       await invoke('stop_recording', { 
         args: { 
-          save_path: audioPath,
-          model_config: modelConfig
+          save_path: audioPath
         }
       });
       console.log('Recording stopped successfully');
+
+      // Upload the audio file to the backend
+      try {
+        console.log('Uploading audio file to backend...');
+        const { readFile } = await import('@tauri-apps/plugin-fs');
+        const fileData = await readFile(audioPath);
+        
+        // Get filename from path
+        const fileName = audioPath.split('/').pop() || 'recording.wav';
+        
+        // Create FormData for file upload
+        const formData = new FormData();
+        const blob = new Blob([fileData], { type: 'audio/wav' });
+        formData.append('file', blob, fileName);
+        
+        // Upload to backend
+        const response = await fetch('http://localhost:5167/upload-audio', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          console.log('Audio file uploaded successfully:', result);
+        } else {
+          console.error('Failed to upload audio file:', response.status, response.statusText);
+        }
+      } catch (uploadError) {
+        console.error('Error uploading audio file:', uploadError);
+        // Don't fail the entire operation if upload fails
+      }
 
       // Format and save transcript
       const formattedTranscript = transcripts

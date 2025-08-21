@@ -318,12 +318,31 @@ async fn audio_collection_task<R: Runtime>(
                 }
             }
 
+            // Store mic samples in the global buffer for final recording
+            unsafe {
+                if let Some(buffer) = &MIC_BUFFER {
+                    if let Ok(mut guard) = buffer.lock() {
+                        guard.extend_from_slice(&chunk);
+                    }
+                }
+            }
+
             mic_samples.extend(chunk);
         }
 
         // Get system audio samples
         while let Ok(chunk) = system_receiver.try_recv() {
             log_debug!("Received {} system samples", chunk.len());
+
+            // Store system samples in the global buffer for final recording
+            unsafe {
+                if let Some(buffer) = &SYSTEM_BUFFER {
+                    if let Ok(mut guard) = buffer.lock() {
+                        guard.extend_from_slice(&chunk);
+                    }
+                }
+            }
+
             system_samples.extend(chunk);
         }
 
@@ -1235,7 +1254,6 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             Vec::new()
         }
     };
-    /*
     // Mix the audio and convert to 16-bit PCM
     let max_len = mic_data.len().max(system_data.len());
     let mut mixed_data = Vec::with_capacity(max_len);
@@ -1247,8 +1265,9 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
     }
 
     if mixed_data.is_empty() {
-        log_error!("No audio data captured");
-        return Err("No audio data captured".to_string());
+        log_info!("No audio data captured, creating empty WAV file");
+        // Create a minimal WAV file with silence
+        mixed_data = vec![0.0; 1000]; // 1000 samples of silence
     }
 
     log_info!("Mixed {} audio samples", mixed_data.len());
@@ -1303,7 +1322,6 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
     wav_file.extend_from_slice(&bytes);
 
     log_info!("Created WAV file with {} bytes total", wav_file.len());
-    */
     // Create the save directory if it doesn't exist
     if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
         if !parent.exists() {
@@ -1316,18 +1334,16 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
         }
     }
 
-    /*
     // Save the recording
     log_info!("Saving recording to: {}", args.save_path);
-    match fs::write(&args.save_path, wav_file) {
-        Ok(_) => log_info!("Successfully saved recording"),
+    match std::fs::write(&args.save_path, wav_file) {
+        Ok(_) => log_info!("Successfully saved recording to: {}", args.save_path),
         Err(e) => {
             let err_msg = format!("Failed to save recording: {}", e);
             log_error!("{}", err_msg);
             return Err(err_msg);
         }
     }
-    */
 
     // Clean up
     unsafe {
@@ -1528,6 +1544,7 @@ pub fn run() {
             window_manager::get_window_position,
             window_manager::toggle_recording_with_ui_feedback,
         ])
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .run(tauri::generate_context!())

@@ -49,6 +49,42 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  const uploadAudioFile = async (filePath: string) => {
+    try {
+      console.log('Uploading audio file to backend...');
+      
+      // Read file using Tauri's file system
+      const { readFile } = await import('@tauri-apps/plugin-fs');
+      const fileData = await readFile(filePath);
+      console.log('File read successfully, size:', fileData.length, 'bytes');
+      
+      // Get filename from path
+      const fileName = filePath.split('/').pop() || 'recording.wav';
+      
+      // Create FormData for file upload
+      const formData = new FormData();
+      const blob = new Blob([fileData], { type: 'audio/wav' });
+      formData.append('file', blob, fileName);
+      
+      // Upload to backend
+      const response = await fetch('http://localhost:5167/upload-audio', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      console.log('Audio file uploaded successfully:', result.message);
+      return result;
+    } catch (error) {
+      console.error('Error uploading audio file:', error);
+      throw error;
+    }
+  };
+
   useEffect(() => {
     const checkTauri = async () => {
       try {
@@ -83,7 +119,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   }, [onRecordingStart, isStarting]);
 
   const stopRecordingAction = useCallback(async () => {
-    console.log('Executing stop recording...');
+    console.log('Stopping recording and saving audio file...');
     try {
       setIsProcessing(true);
       const dataDir = await appDataDir();
@@ -99,6 +135,15 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       
       setRecordingPath(savePath);
       // setShowPlayback(true);
+      
+      // Upload the audio file to the backend
+      try {
+        await uploadAudioFile(savePath);
+      } catch (uploadError) {
+        console.error('Failed to upload audio file:', uploadError);
+        // Don't fail the entire operation if upload fails
+      }
+      
       setIsProcessing(false);
       
       // Track successful transcription
@@ -133,7 +178,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const handleStopRecording = useCallback(async () => {
     if (!isRecording || isStarting || isStopping) return;
     
-    console.log('Stopping recording...');
     setIsStopping(true);
     
     // Immediately trigger the stop action
