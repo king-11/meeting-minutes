@@ -439,7 +439,20 @@ async fn transcription_worker<R: Runtime>(
                     
                     for segment in response.segments {
                         // Clean and validate segment text
-                        let clean_text = segment.text.clone();
+                        // Ignore a segment if it starts with ( and ends with ) or starts with [ and ends with ]
+                        // Trim the text first
+                        let trimmed_text = segment.text.trim();
+                        if trimmed_text.starts_with("(") && trimmed_text.ends_with(")") || trimmed_text.starts_with("[") && trimmed_text.ends_with("]") {
+                            log_info!("Skipping segment: {}", segment.text);
+                            continue;
+                        }
+                        let clean_text = trimmed_text.to_string();
+
+                        log_info!("Emitting segment: {}", clean_text);
+                        let transcript_update = accumulator.add_segment(&segment);
+                        app_handle.emit("transcript-update", &transcript_update).unwrap_or_else(|e| {
+                            log_error!("Failed to emit transcript update: {}", e);
+                        });
                         
                         // Send segment to backend and use its response for display
                         unsafe {
@@ -454,19 +467,8 @@ async fn transcription_worker<R: Runtime>(
                                     true, // include_context
                                 ).await {
                                     Ok(processed_text) => {
-                                        // Backend has processed the transcript, now emit it for display
-                                        // let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-                                        
-                                        // let transcript_update = TranscriptUpdate {
-                                        //     text: processed_text.clone(),
-                                        //     timestamp: format!("{}", format_timestamp(segment_start_elapsed)),
-                                        //     source: "Mixed Audio".to_string(),
-                                        //     sequence_id,
-                                        //     chunk_start_time: segment_start_elapsed,
-                                        //     is_partial: false, // Mark as complete since it's been processed by backend
-                                        // };
 
-                                        log_info!("Emitting backend-processed transcript with sequence_id: {}", processed_text);
+                                        log_info!("Emitting backend-processed transcript chunk {}", processed_text);
                                         
                                         // Create a new segment with the processed text and add to accumulator
                                         let processed_segment = TranscriptSegment {
