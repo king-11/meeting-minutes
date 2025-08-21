@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 const GRACE_PERIOD_MS: u64 = 2000;
 const WORKER_POLL_MS: u64 = 50;
 const MAX_RETRIES: u32 = 3;
-const TRANSCRIPT_SERVER_URL: &str = "http://127.0.0.1:8178";
+pub const TRANSCRIPT_SERVER_URL: &str = "http://127.0.0.1:8178";
 
 #[derive(Debug, Clone)]
 enum WorkerState {
@@ -256,8 +256,48 @@ impl TranscriptionWorker {
         app_handle: &AppHandle<R>,
     ) {
         for segment in response.segments {
-            if let Some(update) = self.accumulator.add_segment(&segment) {
-                self.emit_transcript(update, app_handle).await;
+            // Clean and validate segment text
+            let clean_text = segment.text.clone();
+            
+            // Send segment to backend and use its response for display
+            unsafe {
+                if let Some(ref meeting_id) = crate::CURRENT_MEETING_ID {
+                    info!("Sending segment to backend for processing: {}", clean_text);
+                    
+                    match crate::send_transcript_to_backend(
+                        &meeting_id,
+                        &clean_text,
+                        true, // include_context
+                    ).await {
+                        Ok(processed_text) => {
+                            // Backend has processed the transcript, now emit it for display
+                            info!("Emitting backend-processed transcript: {}", processed_text);
+                            
+                            // Create a new segment with the processed text and add to accumulator
+                            let processed_segment = TranscriptSegment {
+                                text: processed_text,
+                                t0: segment.t0,
+                                t1: segment.t1,
+                            };
+                            if let Some(update) = self.accumulator.add_segment(&processed_segment) {
+                                self.emit_transcript(update, app_handle).await;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to send transcript to backend: {}", e);
+                            // If backend processing fails, fallback to original segment
+                            if let Some(update) = self.accumulator.add_segment(&segment) {
+                                self.emit_transcript(update, app_handle).await;
+                            }
+                        }
+                    }
+                } else {
+                    info!("No meeting ID available, skipping backend processing");
+                    // If no meeting ID, use original segment
+                    if let Some(update) = self.accumulator.add_segment(&segment) {
+                        self.emit_transcript(update, app_handle).await;
+                    }
+                }
             }
         }
     }

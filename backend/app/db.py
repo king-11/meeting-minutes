@@ -2,7 +2,7 @@ import aiosqlite
 import json
 import os
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Any, List
 import logging
 from contextlib import asynccontextmanager
 import sqlite3
@@ -130,7 +130,18 @@ class DatabaseManager:
                     openaiApiKey TEXT
                 )
             """)
-
+            
+            # Create ai_responses table for storing AI assistance responses
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_responses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id TEXT NOT NULL,
+                    response_data TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+                )
+            """)
             conn.commit()
 
     @asynccontextmanager
@@ -875,5 +886,48 @@ class DatabaseManager:
             logger.error(f"Error updating meeting summary: {str(e)}")
             raise
 
-   
-
+    async def save_ai_response(self, meeting_id: str, response_data: Dict[str, Any]):
+        """Save AI response for a meeting"""
+        now = datetime.utcnow().isoformat()
+        
+        try:
+            async with self._get_connection() as conn:
+                await conn.execute(
+                    """INSERT INTO ai_responses (meeting_id, response_data, timestamp, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (meeting_id, json.dumps(response_data), response_data.get('timestamp', now), now)
+                )
+                await conn.commit()
+                logger.info(f"Saved AI response for meeting {meeting_id}")
+        except Exception as e:
+            logger.error(f"Failed to save AI response: {str(e)}", exc_info=True)
+            raise
+    
+    async def get_ai_responses(self, meeting_id: str, limit: int = 50):
+        """Get AI responses for a meeting"""
+        try:
+            async with self._get_connection() as conn:
+                cursor = await conn.execute(
+                    """SELECT response_data, timestamp, created_at 
+                       FROM ai_responses 
+                       WHERE meeting_id = ? 
+                       ORDER BY created_at DESC 
+                       LIMIT ?""",
+                    (meeting_id, limit)
+                )
+                rows = await cursor.fetchall()
+                
+                responses = []
+                for row in rows:
+                    try:
+                        response_data = json.loads(row[0])
+                        response_data['timestamp'] = row[1]
+                        response_data['created_at'] = row[2]
+                        responses.append(response_data)
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse AI response data")
+                        
+                return responses
+        except Exception as e:
+            logger.error(f"Failed to get AI responses: {str(e)}", exc_info=True)
+            return []
