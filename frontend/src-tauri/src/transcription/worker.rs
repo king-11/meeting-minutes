@@ -258,7 +258,7 @@ impl TranscriptionWorker {
         for segment in response.segments {
             // first trim the text
             let trimmed_text = segment.text.trim();
-            if trimmed_text.starts_with("[") || trimmed_text.starts_with("(") {
+            if trimmed_text.starts_with("[") || trimmed_text.starts_with("(") || trimmed_text.contains("Thank you") {
                 continue;
             }
             

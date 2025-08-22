@@ -212,22 +212,32 @@ class CustomAIService:
                 if response.status == 200:
                     result = await response.json()
                     
+                    # Extract the AI response from Glean format
+                    ai_response = ""
+
                     # Extract and store chatId if present (first call for this meeting)
                     if "chatId" in result:
+                        # if (meeting_id not in self.chat_ids or self.chat_ids[meeting_id] != result["chatId"]):
+                        #     ai_response = "Chat started at https://app.glean.com/chat/"+result["chatId"]+"\n"
                         self.chat_ids[meeting_id] = result["chatId"]
                         logger.info(f"Stored chatId for meeting {meeting_id}: {result['chatId']}")
                     
-                    # Extract the AI response from Glean format
-                    ai_response = ""
                     if "messages" in result and len(result["messages"]) > 0:
+                        doneFollowup = False
                         for message in result["messages"]:
                             # Glean API may return 'GLEAN_AI' or 'ASSISTANT' as the author
                             if message.get("author") in ["GLEAN_AI", "ASSISTANT"] and "fragments" in message:
                                 for fragment in message["fragments"]:
+                                    if "followupAction" in fragment:
+                                        if not doneFollowup:
+                                            doneFollowup = True
+                                        continue
                                     if "action" in fragment:
                                         continue
                                     if "text" in fragment:
                                         ai_response = fragment["text"]
+                        if doneFollowup:
+                            ai_response = "Link to chat: https://app.glean.com/chat/"+self.chat_ids[meeting_id]+"\n"+ai_response
                     logger.info(f"Extracted AI response: {ai_response[:200]}..." if ai_response else "No AI response extracted")
                     return "Glean: " + ai_response
                 else:
