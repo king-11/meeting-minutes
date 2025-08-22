@@ -1,9 +1,10 @@
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
@@ -11,6 +12,9 @@ import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
 import time
+import asyncio
+from datetime import datetime
+from custom_ai_service import get_ai_service, cleanup_ai_service
 import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -61,6 +65,54 @@ app.add_middleware(
 # Global database manager instance for meeting management endpoints
 db = DatabaseManager()
 
+# class WebSocketConnectionManager:
+#     """Manages WebSocket connections for real-time communication"""
+#     def __init__(self):
+#         self.active_connections: Dict[str, List[WebSocket]] = {}
+#         self.lock = Lock()
+    
+#     async def connect(self, websocket: WebSocket, meeting_id: str):
+#         await websocket.accept()
+#         with self.lock:
+#             if meeting_id not in self.active_connections:
+#                 self.active_connections[meeting_id] = []
+#             self.active_connections[meeting_id].append(websocket)
+#         logger.info(f"WebSocket connected for meeting {meeting_id}")
+    
+#     def disconnect(self, websocket: WebSocket, meeting_id: str):
+#         with self.lock:
+#             if meeting_id in self.active_connections:
+#                 self.active_connections[meeting_id].remove(websocket)
+#                 if not self.active_connections[meeting_id]:
+#                     del self.active_connections[meeting_id]
+#         logger.info(f"WebSocket disconnected for meeting {meeting_id}")
+    
+#     async def send_to_meeting(self, meeting_id: str, message: dict):
+#         """Send message to all connections for a meeting"""
+#         if meeting_id in self.active_connections:
+#             disconnected = []
+#             for connection in self.active_connections[meeting_id]:
+#                 try:
+#                     await connection.send_json(message)
+#                 except Exception as e:
+#                     logger.error(f"Error sending to websocket: {e}")
+#                     disconnected.append(connection)
+            
+#             # Clean up disconnected sockets
+#             for conn in disconnected:
+#                 self.disconnect(conn, meeting_id)
+    
+#     async def broadcast(self, message: dict):
+#         """Broadcast message to all connected clients"""
+#         for meeting_id in list(self.active_connections.keys()):
+#             await self.send_to_meeting(meeting_id, message)
+
+# # Initialize WebSocket manager
+# ws_manager = WebSocketConnectionManager()
+
+# # Initialize AI service
+ai_service = get_ai_service()
+
 # New Pydantic models for meeting management
 class Transcript(BaseModel):
     id: str
@@ -99,6 +151,13 @@ class SaveTranscriptConfigRequest(BaseModel):
     provider: str
     model: str
     apiKey: Optional[str] = None
+
+class RealtimeTranscriptRequest(BaseModel):
+    """Request model for real-time transcript processing"""
+    meeting_id: str
+    transcript_chunk: str
+    timestamp: Optional[str] = None
+    include_context: bool = True
 
 class TranscriptRequest(BaseModel):
     """Request model for transcript text, updated with meeting_id"""
@@ -624,6 +683,116 @@ async def search_transcripts(request: SearchRequest):
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# @app.websocket("/ws/{meeting_id}")
+# async def websocket_endpoint(websocket: WebSocket, meeting_id: str):
+#     """WebSocket endpoint for real-time communication"""
+#     await ws_manager.connect(websocket, meeting_id)
+    
+#     try:
+#         while True:
+#             # Receive transcript chunks from client
+#             data = await websocket.receive_json()
+            
+#             if data.get("type") == "transcript":
+#                 # Process transcript with AI service
+#                 transcript_chunk = data.get("text", "")
+                
+#                 if transcript_chunk:
+#                     # Get AI assistance for the transcript chunk
+#                     ai_response = await ai_service.process_transcript_chunk(
+#                         meeting_id=meeting_id,
+#                         transcript_chunk=transcript_chunk,
+#                         include_context=data.get("include_context", True)
+#                     )
+                    
+#                     if ai_response:
+#                         # Send AI response back to client
+#                         await websocket.send_json({
+#                             "type": "ai_assistance",
+#                             "data": ai_response,
+#                             "timestamp": datetime.utcnow().isoformat()
+#                         })
+                        
+#                         # Store AI response in database
+#                         await db.save_ai_response(meeting_id, ai_response)
+            
+#             elif data.get("type") == "command":
+#                 command = data.get("command")
+                
+#                 if command == "get_context":
+#                     # Send current context
+#                     context = ai_service.get_or_create_context(meeting_id)
+#                     await websocket.send_json({
+#                         "type": "context",
+#                         "data": context.get_full_context(),
+#                         "timestamp": datetime.utcnow().isoformat()
+#                     })
+                
+#                 elif command == "clear_context":
+#                     # Clear context for meeting
+#                     ai_service.clear_context(meeting_id)
+#                     await websocket.send_json({
+#                         "type": "context_cleared",
+#                         "meeting_id": meeting_id,
+#                         "timestamp": datetime.utcnow().isoformat()
+#                     })
+    
+#     except WebSocketDisconnect:
+#         ws_manager.disconnect(websocket, meeting_id)
+#         logger.info(f"WebSocket disconnected for meeting {meeting_id}")
+#     except Exception as e:
+#         logger.error(f"WebSocket error for meeting {meeting_id}: {str(e)}", exc_info=True)
+#         ws_manager.disconnect(websocket, meeting_id)
+
+@app.post("/process-realtime-transcript")
+async def process_realtime_transcript(request: RealtimeTranscriptRequest):
+    """Process real-time transcript chunk and get AI assistance"""
+    try:
+        # Process transcript with AI service
+        ai_response = await ai_service.process_transcript_chunk(
+            meeting_id=request.meeting_id,
+            transcript_chunk=request.transcript_chunk,
+            include_context=request.include_context
+        )
+        
+        if ai_response:
+            # Broadcast to all WebSocket clients for this meeting
+            # await ws_manager.send_to_meeting(request.meeting_id, {
+            #     "type": "ai_assistance",
+            #     "data": ai_response,
+            #     "timestamp": datetime.utcnow().isoformat()
+            # })
+            
+            # Store in database
+            # await db.save_ai_response(request.meeting_id, ai_response)
+            
+            return JSONResponse({
+                "status": "success",
+                "ai_response": ai_response
+            })
+        else:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "message": "AI service unavailable"
+                }
+            )
+    
+    except Exception as e:
+        logger.error(f"Error processing realtime transcript: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    logger.info("Starting up API services...")
+    try:
+        await ai_service.initialize()
+        logger.info("AI service initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize AI service: {str(e)}", exc_info=True)
+
 def get_google_credentials():
     """Get Google credentials using OAuth2 (personal account) or service account"""
     # Scopes needed
@@ -857,6 +1026,7 @@ async def shutdown_event():
     logger.info("API shutting down, cleaning up resources")
     try:
         processor.cleanup()
+        await cleanup_ai_service()
         logger.info("Successfully cleaned up resources")
     except Exception as e:
         logger.error(f"Error during cleanup: {str(e)}", exc_info=True)

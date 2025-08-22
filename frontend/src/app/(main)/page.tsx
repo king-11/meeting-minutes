@@ -143,10 +143,34 @@ export default function Home() {
   }, [meetingTitle, setCurrentMeeting]);
 
   useEffect(() => {
+    let isCheckingState = false; // Prevent overlapping checks
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
+    
     const checkRecordingState = async () => {
+      // Skip if already checking to prevent overlapping calls
+      if (isCheckingState) {
+        console.log('Skipping recording state check - already in progress');
+        return;
+      }
+      
+      isCheckingState = true;
+      
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const isCurrentlyRecording = await invoke('is_recording');
+        
+        // Add timeout to prevent hanging IPC calls
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('IPC timeout')), 2000)
+        );
+        
+        const isCurrentlyRecording = await Promise.race([
+          invoke('is_recording'),
+          timeoutPromise
+        ]);
+        
+        // Reset retry count on successful check
+        retryCount = 0;
         
         if (isCurrentlyRecording && !isRecording) {
           console.log('Recording is active in backend but not in UI, synchronizing state...');
@@ -158,16 +182,26 @@ export default function Home() {
         }
       } catch (error) {
         console.error('Failed to check recording state:', error);
+        retryCount++;
+        
+        // Stop polling if too many consecutive errors
+        if (retryCount >= MAX_RETRIES) {
+          console.error(`Recording state check failed ${MAX_RETRIES} times, stopping polling`);
+          clearInterval(interval);
+        }
+      } finally {
+        isCheckingState = false;
       }
     };
 
+    // Initial check
     checkRecordingState();
     
-    // Set up a polling interval to periodically check recording state
-    const interval = setInterval(checkRecordingState, 1000); // Check every 1 second
+    // Set up a polling interval with longer delay to reduce load
+    const interval = setInterval(checkRecordingState, 3000); // Check every 3 seconds instead of 1
     
     return () => clearInterval(interval);
-  }, [isRecording, setIsMeetingActive]);
+  }, [isRecording]);
   
 
 
@@ -771,10 +805,13 @@ export default function Home() {
       text: update.text,
       timestamp: update.timestamp,
       sequence_id: update.sequence_id || 0,
+      is_partial: update.is_partial || false,
+      chunk_start_time: update.chunk_start_time,
     };
     
     setTranscripts(prev => {
       console.log('📊 Current transcripts count before update:', prev.length);
+      console.log('📊 Update is_partial:', update.is_partial);
       
       // Check if this transcript already exists
       const exists = prev.some(
@@ -793,7 +830,8 @@ export default function Home() {
       console.log('📝 Latest transcript:', {
         id: newTranscript.id,
         text: newTranscript.text.substring(0, 30) + '...',
-        sequence_id: newTranscript.sequence_id
+        sequence_id: newTranscript.sequence_id,
+        is_partial: newTranscript.is_partial
       });
       
       return sorted;

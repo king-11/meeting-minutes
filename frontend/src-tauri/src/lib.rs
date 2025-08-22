@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
@@ -49,9 +49,83 @@ const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chun
 const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
 const MAX_AUDIO_QUEUE_SIZE: usize = 10; // Maximum number of chunks in queue
 
+// Server configuration constants
+const BACKEND_SERVER_URL: &str = "http://localhost:5167";
+
+// Global meeting ID for current recording session
+pub static mut CURRENT_MEETING_ID: Option<String> = None;
+
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
     save_path: String,
+}
+
+// Function to send transcript chunk to backend for AI processing
+pub async fn send_transcript_to_backend(
+    meeting_id: &str,
+    transcript_chunk: &str,
+    include_context: bool,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let url = format!("{}/process-realtime-transcript", BACKEND_SERVER_URL);
+    
+    #[derive(Serialize)]
+    struct RealtimeTranscriptRequest {
+        meeting_id: String,
+        transcript_chunk: String,
+        include_context: bool,
+    }
+    
+    #[derive(Deserialize)]
+    struct BackendResponse {
+        status: String,
+        ai_response: Option<String>,
+    }
+    
+    let request_body = RealtimeTranscriptRequest {
+        meeting_id: meeting_id.to_string(),
+        transcript_chunk: transcript_chunk.to_string(),
+        include_context,
+    };
+    
+    match client
+        .post(&url)
+        .json(&request_body)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<BackendResponse>().await {
+                    Ok(backend_resp) => {
+                        if let Some(ai_response) = backend_resp.ai_response {
+                            log_info!("Successfully received processed transcript from backend: {}", ai_response);
+                            Ok(ai_response.to_string())
+                        } else {
+                            log_error!("Backend response missing ai_response field");
+                            Err("Backend response missing ai_response".to_string())
+                        }
+                    }
+                    Err(e) => {
+                        log_error!("Failed to parse backend response: {}", e);
+                        Err(format!("Failed to parse response: {}", e))
+                    }
+                }
+            } else {
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                log_error!("Backend returned error status {}: {}", status, error_text);
+                Err(format!("Backend error: {} - {}", status, error_text))
+            }
+        }
+        Err(e) => {
+            log_error!("Failed to send transcript to backend: {}", e);
+            Err(format!("Network error: {}", e))
+        }
+    }
 }
 
 async fn audio_collection_task<R: Runtime>(
@@ -292,6 +366,15 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     }
 
     // Reset dropped chunk counter for new recording session (handled by AudioQueue)
+    // Generate a unique meeting ID for this recording session
+    unsafe {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        CURRENT_MEETING_ID = Some(format!("meeting-{}", timestamp));
+        log_info!("Generated meeting ID: {:?}", CURRENT_MEETING_ID);
+    }
 
     // Stop any existing tasks first
     unsafe {
@@ -431,6 +514,12 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
     if !RECORDING_FLAG.load(Ordering::SeqCst) {
         log_info!("Recording is already stopped");
         return Ok(());
+    }
+    
+    // Clear the meeting ID
+    unsafe {
+        log_info!("Clearing meeting ID: {:?}", CURRENT_MEETING_ID);
+        CURRENT_MEETING_ID = None;
     }
 
     // Stop audio level monitoring

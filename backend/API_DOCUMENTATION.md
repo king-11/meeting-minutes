@@ -15,6 +15,11 @@ Create a `.env` file in the backend directory with the following variables:
 ANTHROPIC_API_KEY=your_anthropic_api_key    # Required for Claude model
 GROQ_API_KEY=your_groq_api_key              # Optional, for Groq model
 
+# Glean API Configuration (Required for real-time AI assistance)
+GLEAN_API_KEY=your_glean_api_key            # Required for Glean AI integration
+GLEAN_API_URL=https://scio-prod-be.glean.com/rest/api/v1  # Optional, Glean API endpoint
+GLEAN_AGENT_ID=your_agent_id                # Optional, Glean agent ID
+
 # Database Configuration
 DB_PATH=./meetings.db                        # SQLite database path
 

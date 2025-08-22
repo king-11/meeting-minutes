@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 use log::{debug as log_debug, info as log_info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,7 +12,7 @@ pub struct AudioLevels {
 
 static MONITORING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LAST_EMISSION_TIME: AtomicU64 = AtomicU64::new(0);
-const EMISSION_INTERVAL_MS: u64 = 33; // ~30Hz max emission rate
+const EMISSION_INTERVAL_MS: u64 = 100; // ~10Hz max emission rate (reduced from 30Hz to prevent flooding)
 
 /// Calculate RMS (Root Mean Square) value from audio samples
 pub fn calculate_rms(samples: &[f32]) -> f32 {

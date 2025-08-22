@@ -256,8 +256,54 @@ impl TranscriptionWorker {
         app_handle: &AppHandle<R>,
     ) {
         for segment in response.segments {
+            // if segment text starts with "[" and ends with "]" then skip, also for "()"
+            if segment.text.starts_with("[") || segment.text.starts_with("(") {
+                continue;
+            }
+
             if let Some(update) = self.accumulator.add_segment(&segment) {
                 self.emit_transcript(update, app_handle).await;
+            }
+            
+            // Send segment to backend and use its response for display
+            unsafe {
+                if let Some(ref meeting_id) = crate::CURRENT_MEETING_ID {
+                    info!("Sending segment to backend for processing: {}", &segment.text);
+                    
+                    match crate::send_transcript_to_backend(
+                        &meeting_id,
+                        &segment.text,
+                        true, // include_context
+                    ).await {
+                        Ok(processed_text) => {
+                            // Backend has processed the transcript, now emit it for display
+                            info!("Emitting backend-processed transcript: {}", processed_text);
+                            
+                            // Create a new segment with the processed text and add to accumulator
+                            let processed_segment = TranscriptSegment {
+                                text: processed_text,
+                                t0: segment.t1,
+                                t1: segment.t1 + 1.0,
+                            };
+                            if let Some(update) = self.accumulator.add_segment(&processed_segment) {
+                                self.emit_transcript(update, app_handle).await;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to send transcript to backend: {}", e);
+                            // If backend processing fails, fallback to original segment
+                            if let Some(update) = self.accumulator.add_segment(&segment) {
+                                self.emit_transcript(update, app_handle).await;
+                            }
+                        }
+                    }
+                } else {
+                    info!("No meeting ID available, skipping backend processing");
+                    // If no meeting ID, use original segment
+                    if let Some(update) = self.accumulator.add_segment(&segment) {
+                        self.emit_transcript(update, app_handle).await;
+                    }
+                }
             }
         }
     }

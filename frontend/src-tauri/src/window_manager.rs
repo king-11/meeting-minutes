@@ -1,7 +1,6 @@
 use tauri::{AppHandle, Manager, Runtime, Emitter};
 use tauri_plugin_store::StoreExt;
 use serde_json::json;
-use serde::{Deserialize, Serialize};
 
 #[tauri::command]
 pub async fn show_floating_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
