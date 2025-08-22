@@ -1,28 +1,25 @@
-use tauri::{
-    AppHandle, Manager, Runtime, Emitter, WebviewUrl, WebviewWindowBuilder,
-    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent, MouseButton},
-};
 use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
+};
 
 static RECORDING_STATE: AtomicBool = AtomicBool::new(false);
 
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let toggle_recording = MenuItemBuilder::with_id("toggle_recording", "Start Recording")
-        .build(app)?;
-    
-    let open_window = MenuItemBuilder::with_id("open_window", "Open Main Window")
-        .build(app)?;
-    
-    let settings = MenuItemBuilder::with_id("settings", "Settings")
-        .build(app)?;
-    
-    let quit = MenuItemBuilder::with_id("quit", "Quit")
-        .build(app)?;
-    
+    let toggle_recording =
+        MenuItemBuilder::with_id("toggle_recording", "Start Recording").build(app)?;
+
+    let open_window = MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?;
+
+    let settings = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
+
+    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+
     let separator = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
-    
+
     let menu = MenuBuilder::new(app)
         .item(&toggle_recording)
         .item(&separator)
@@ -31,10 +28,10 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .item(&separator2)
         .item(&quit)
         .build()?;
-    
+
     let _tray = TrayIconBuilder::new()
         .menu(&menu)
-        .tooltip("Meetily")
+        .tooltip("Glean")
         .icon(app.default_window_icon().unwrap().clone())
         .on_menu_event(move |app, event| {
             handle_menu_event(app, event.id.as_ref());
@@ -63,7 +60,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
         })
         .build(app)?;
-    
+
     Ok(())
 }
 
@@ -92,9 +89,9 @@ fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     if app.get_webview_window("main").is_some() {
         return Ok(());
     }
-    
+
     log::info!("Creating new main window");
-    
+
     // Create a new main window with the same configuration as in tauri.conf.json
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("meetily")
@@ -107,22 +104,26 @@ fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             log::error!("Failed to create main window: {}", e);
             e.to_string()
         })?;
-    
+
     // Show the window
     if let Err(e) = window.show() {
         log::error!("Failed to show new main window: {}", e);
     }
-    
+
     // Set focus to the window
     if let Err(e) = window.set_focus() {
         log::error!("Failed to set focus to new main window: {}", e);
     }
-    
+
     Ok(())
 }
 
 // Helper function to properly activate app and show window
-fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, eval_script: Option<&str>) {
+fn activate_and_show_window<R: Runtime>(
+    app: &AppHandle<R>,
+    window_label: &str,
+    eval_script: Option<&str>,
+) {
     // First, activate the app (bring to foreground on macOS)
     #[cfg(target_os = "macos")]
     {
@@ -130,7 +131,7 @@ fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, 
             log::error!("Failed to activate app: {}", e);
         }
     }
-    
+
     // Check if window exists, if not and it's the main window, create it
     if app.get_webview_window(window_label).is_none() && window_label == "main" {
         if let Err(e) = create_main_window(app) {
@@ -138,7 +139,7 @@ fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, 
             return;
         }
     }
-    
+
     // Then show the window
     if let Some(window) = app.get_webview_window(window_label) {
         // Unminimize if minimized
@@ -149,17 +150,17 @@ fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, 
                 }
             }
         }
-        
+
         // Show the window
         if let Err(e) = window.show() {
             log::error!("Failed to show window: {}", e);
         }
-        
+
         // Set focus to the window
         if let Err(e) = window.set_focus() {
             log::error!("Failed to set focus: {}", e);
         }
-        
+
         // Execute any eval script if provided
         if let Some(script) = eval_script {
             if let Err(e) = window.eval(script) {
@@ -174,7 +175,7 @@ fn activate_and_show_window<R: Runtime>(app: &AppHandle<R>, window_label: &str, 
 pub fn toggle_recording<R: Runtime>(app: &AppHandle<R>, start: bool) {
     RECORDING_STATE.store(start, Ordering::SeqCst);
     update_tray_menu(app, start);
-    
+
     if start {
         let _ = app.emit("start-recording-from-tray", ());
     } else {
@@ -188,27 +189,29 @@ pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>, recording: bool) {
     } else {
         "Start Recording"
     };
-    
+
     // Rebuild the menu with updated label
     let toggle_recording = MenuItemBuilder::with_id("toggle_recording", label)
-        .build(app).ok();
-    
+        .build(app)
+        .ok();
+
     if toggle_recording.is_none() {
         return;
     }
-    
+
     let open_window = MenuItemBuilder::with_id("open_window", "Open Main Window")
-        .build(app).ok();
-    
+        .build(app)
+        .ok();
+
     let settings = MenuItemBuilder::with_id("settings", "Settings")
-        .build(app).ok();
-    
-    let quit = MenuItemBuilder::with_id("quit", "Quit")
-        .build(app).ok();
-    
-    if let (Some(toggle), Some(open), Some(settings_item), Some(quit_item)) = 
-        (toggle_recording, open_window, settings, quit) {
-        
+        .build(app)
+        .ok();
+
+    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app).ok();
+
+    if let (Some(toggle), Some(open), Some(settings_item), Some(quit_item)) =
+        (toggle_recording, open_window, settings, quit)
+    {
         if let Ok(separator) = PredefinedMenuItem::separator(app) {
             if let Ok(separator2) = PredefinedMenuItem::separator(app) {
                 if let Ok(menu) = MenuBuilder::new(app)
@@ -218,8 +221,8 @@ pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>, recording: bool) {
                     .item(&settings_item)
                     .item(&separator2)
                     .item(&quit_item)
-                    .build() {
-                    
+                    .build()
+                {
                     // Update the tray menu
                     if let Some(tray) = app.tray_by_id("main") {
                         let _ = tray.set_menu(Some(menu));

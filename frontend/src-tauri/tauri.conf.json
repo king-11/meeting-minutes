@@ -1,114 +1,114 @@
 {
-    "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-    "productName": "meetily-frontend",
-    "version": "0.0.5",
-    "identifier": "com.meetily.ai",
-    "build": {
-        "frontendDist": "../out",
-        "devUrl": "http://localhost:3118",
-        "beforeDevCommand": "pnpm dev",
-        "beforeBuildCommand": "pnpm build"
-    },
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "glean",
+  "version": "0.0.5",
+  "identifier": "com.meetily.ai",
+  "build": {
+    "frontendDist": "../out",
+    "devUrl": "http://localhost:3118",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
 
-    "app": {
-        "windows": [{
-            "title": "meetily",
-            "label": "main",
-            "width": 1200,
-            "height": 800,
-            "resizable": true,
-            "fullscreen": false,
-            "theme": "Light",
-            "decorations": true
-        }, {
-            "title": "",
-            "label": "floating",
-            "url": "/floating",
-            "width": 220,
-            "height": 90,
-            "resizable": false,
-            "alwaysOnTop": true,
-            "decorations": false,
-            "transparent": true,
-            "skipTaskbar": true,
-            "visible": false,
-            "center": true
-        }],
-        "macOSPrivateApi": true,
-        "security": {
-            "csp": {
-                "default-src": "'self'",
-                "img-src": "'self' asset: https://asset.localhost data:",
-                "connect-src": "'self' http://localhost:11434 http://localhost:5167 http://localhost:8178 https://api.ollama.ai"
-            },
-            "assetProtocol": {
-                "enable": true,
-                "scope": [
-                    "$APPDATA/**"
-                ]
-            },
-            "capabilities": [{
-                "identifier": "main",
-                "description": "Main window capability with file system and media access",
-                "windows": ["main"],
-                "permissions": [
-                    "fs:default",
-                    "fs:allow-read-file",
-                    "fs:read-all",
-                    "fs:write-all",
-                    "fs:allow-app-read",
-                    "fs:allow-app-write",
-                    "fs:allow-download-write",
-                    "fs:allow-download-read",
-                    "fs:scope-download",
-                    "core:path:default",
-                    "core:event:default",
-                    "core:window:default",
-                    "core:app:default",
-                    "core:resources:default",
-                    "core:menu:default",
-                    "core:tray:default",
-                    "core:window:allow-set-title",
-                    "core:window:allow-show",
-                    "core:window:allow-hide",
-                    "core:window:allow-close",
-                    "core:window:allow-set-position",
-                    "core:window:allow-set-always-on-top",
-                    "core:window:allow-set-focus",
-                    "store:default",
-                    "global-shortcut:default",
-                    {
-                        "identifier": "fs:scope",
-                        "allow": [{ "path": "$APPDATA/*" }]
-                    }
-                ]
-            }, {
-                "identifier": "floating",
-                "description": "Floating window capability for recording status display",
-                "windows": ["floating"],
-                "permissions": [
-                    "core:event:default",
-                    "core:window:default",
-                    "core:window:allow-set-position",
-                    "core:window:allow-outer-position",
-                    "core:window:allow-show",
-                    "core:window:allow-hide",
-                    "store:default"
-                ]
-            }]
+  "app": {
+    "windows": [
+      {
+        "title": "Glean",
+        "label": "main",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "theme": "Light",
+        "decorations": true
+      },
+      {
+        "title": "",
+        "label": "floating",
+        "url": "/floating",
+        "width": 220,
+        "height": 90,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' asset: https://asset.localhost data:",
+        "connect-src": "'self' http://localhost:11434 http://localhost:5167 http://localhost:8178 https://api.ollama.ai"
+      },
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      },
+      "capabilities": [
+        {
+          "identifier": "main",
+          "description": "Main window capability with file system and media access",
+          "windows": ["main"],
+          "permissions": [
+            "fs:default",
+            "fs:allow-read-file",
+            "fs:read-all",
+            "fs:write-all",
+            "fs:allow-app-read",
+            "fs:allow-app-write",
+            "fs:allow-download-write",
+            "fs:allow-download-read",
+            "fs:scope-download",
+            "core:path:default",
+            "core:event:default",
+            "core:window:default",
+            "core:app:default",
+            "core:resources:default",
+            "core:menu:default",
+            "core:tray:default",
+            "core:window:allow-set-title",
+            "core:window:allow-show",
+            "core:window:allow-hide",
+            "core:window:allow-close",
+            "core:window:allow-set-position",
+            "core:window:allow-set-always-on-top",
+            "core:window:allow-set-focus",
+            "store:default",
+            "global-shortcut:default",
+            {
+              "identifier": "fs:scope",
+              "allow": [{ "path": "$APPDATA/*" }]
+            }
+          ]
+        },
+        {
+          "identifier": "floating",
+          "description": "Floating window capability for recording status display",
+          "windows": ["floating"],
+          "permissions": [
+            "core:event:default",
+            "core:window:default",
+            "core:window:allow-set-position",
+            "core:window:allow-outer-position",
+            "core:window:allow-show",
+            "core:window:allow-hide",
+            "store:default"
+          ]
         }
-    },
-    "bundle": {
-        "active": true,
-        "targets": "all",
-        "icon": [
-            "icons/icon.png",
-            "icons/app_icon.icns",
-            "icons/app_icon.ico"
-        ],
-        "macOS": {
-            "minimumSystemVersion": "10.15",
-            "exceptionDomain": ""
-        }
+      ]
     }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/app_icon.icns", "icons/app_icon.ico"],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "exceptionDomain": ""
+    }
+  }
 }

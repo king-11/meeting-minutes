@@ -3,6 +3,59 @@
 version = 3
 
 [[package]]
+name = "Glean"
+version = "0.0.5"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "bytes",
+ "chrono",
+ "clap",
+ "cpal",
+ "criterion",
+ "crossbeam",
+ "dashmap",
+ "dirs 5.0.1",
+ "env_logger",
+ "esaxx-rs",
+ "ffmpeg-sidecar",
+ "futures",
+ "hound",
+ "infer 0.15.0",
+ "lazy_static",
+ "log",
+ "memory-stats",
+ "ndarray",
+ "objc",
+ "once_cell",
+ "posthog-rs",
+ "rand 0.8.5",
+ "realfft",
+ "regex",
+ "reqwest 0.11.27",
+ "rubato",
+ "serde",
+ "serde_json",
+ "strsim 0.10.0",
+ "symphonia",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-devtools",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-log",
+ "tauri-plugin-store",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "which",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3128,59 +3181,6 @@ checksum = "9380b911e3e96d10c1f415da0876389aaf1b56759054eeb0de7df940c456ba1a"
 dependencies = [
  "autocfg",
  "rawpointer",
-]
-
-[[package]]
-name = "meetily-frontend-app"
-version = "0.0.5"
-dependencies = [
- "anyhow",
- "bytemuck",
- "bytes",
- "chrono",
- "clap",
- "cpal",
- "criterion",
- "crossbeam",
- "dashmap",
- "dirs 5.0.1",
- "env_logger",
- "esaxx-rs",
- "ffmpeg-sidecar",
- "futures",
- "hound",
- "infer 0.15.0",
- "lazy_static",
- "log",
- "memory-stats",
- "ndarray",
- "objc",
- "once_cell",
- "posthog-rs",
- "rand 0.8.5",
- "realfft",
- "regex",
- "reqwest 0.11.27",
- "rubato",
- "serde",
- "serde_json",
- "strsim 0.10.0",
- "symphonia",
- "tauri",
- "tauri-build",
- "tauri-plugin-devtools",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-log",
- "tauri-plugin-store",
- "tempfile",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "which",
 ]
 
 [[package]]
