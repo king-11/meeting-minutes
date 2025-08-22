@@ -1,10 +1,10 @@
 import './globals.css'
-import { Source_Sans_3 } from 'next/font/google'
+import { DM_Sans } from 'next/font/google'
 
-const sourceSans3 = Source_Sans_3({ 
+const dmSans = DM_Sans({ 
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
-  variable: '--font-source-sans-3',
+  variable: '--font-dm-sans',
 })
 
 export { metadata } from './metadata'
@@ -16,7 +16,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${sourceSans3.variable} font-sans`}>
+      <body className={`${dmSans.variable} font-sans`}>
         {children}
       </body>
     </html>
