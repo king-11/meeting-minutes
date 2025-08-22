@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use log::{debug as log_debug, info as log_info};
 
@@ -10,6 +11,8 @@ pub struct AudioLevels {
 }
 
 static MONITORING_ACTIVE: AtomicBool = AtomicBool::new(false);
+static LAST_EMISSION_TIME: AtomicU64 = AtomicU64::new(0);
+const EMISSION_INTERVAL_MS: u64 = 33; // ~30Hz max emission rate
 
 /// Calculate RMS (Root Mean Square) value from audio samples
 pub fn calculate_rms(samples: &[f32]) -> f32 {
@@ -62,6 +65,19 @@ pub fn process_audio_with_levels<R: Runtime>(
         return Ok(());
     }
     
+    // Check if enough time has passed since last emission
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    
+    let last_emission = LAST_EMISSION_TIME.load(Ordering::Relaxed);
+    
+    // Only emit if the interval has passed
+    if now.saturating_sub(last_emission) < EMISSION_INTERVAL_MS {
+        return Ok(());
+    }
+    
     let levels = calculate_audio_levels(buffer);
     log_debug!("Audio levels calculated - RMS: {:.3}, Peak: {:.3}", levels.rms, levels.peak);
     
@@ -70,6 +86,8 @@ pub fn process_audio_with_levels<R: Runtime>(
         log_debug!("Failed to emit audio-levels globally: {}", e);
     } else {
         log_debug!("Successfully emitted audio-levels globally");
+        // Update last emission time only on successful emission
+        LAST_EMISSION_TIME.store(now, Ordering::Relaxed);
     }
     
     // Removed duplicate emission to floating window - global broadcast already covers it

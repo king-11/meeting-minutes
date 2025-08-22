@@ -170,35 +170,78 @@ export default function FloatingWindow() {
   };
 
   return (
-    <div
-      className="floating-window"
-      style={{
-        width: "220px",
-        height: "90px",
-        backgroundColor: "rgba(20, 20, 20, 0.9)",
-        borderRadius: "12px",
-        padding: "12px",
-        color: "white",
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        gap: "8px",
-        backdropFilter: "blur(10px)",
-        WebkitBackdropFilter: "blur(10px)",
-        boxShadow:
-          "0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2)",
-        cursor: "move",
-        userSelect: "none",
-        ...({ WebkitAppRegion: "drag" } as any),
-      }}
-      onMouseUp={async () => {
-        // Save position when drag ends
-        if (currentWindow) {
-          const position = await currentWindow.outerPosition();
-          saveWindowPosition(position.x, position.y);
+    <>
+      <style jsx>{`
+        @keyframes gradientShift {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
         }
-      }}
-    >
+        
+        @keyframes pulse {
+          0%, 100% { opacity: 0.8; }
+          50% { opacity: 1; }
+        }
+        
+        .floating-window::before {
+          content: '';
+          position: absolute;
+          inset: -2px;
+          background: linear-gradient(
+            90deg,
+            #D8FD49,
+            #343CED,
+            #E16BFF,
+            #DCBB9B,
+            #D8FD49
+          );
+          background-size: 300% 300%;
+          animation: gradientShift 8s ease infinite;
+          border-radius: 18px;
+          opacity: ${isRecording ? 0.8 : 0.4};
+          z-index: -1;
+          transition: opacity 0.3s ease;
+        }
+        
+        .floating-window {
+          position: relative;
+        }
+      `}</style>
+      <div
+        className="floating-window"
+        style={{
+          width: "280px",
+          height: "120px",
+          background: isRecording 
+            ? "linear-gradient(135deg, rgba(52, 60, 237, 0.25), rgba(216, 253, 73, 0.15), rgba(225, 107, 255, 0.1))"
+            : "linear-gradient(135deg, rgba(52, 60, 237, 0.15), rgba(225, 223, 215, 0.08))",
+          backgroundColor: "rgba(20, 20, 30, 0.6)",
+          borderRadius: "16px",
+          padding: "16px",
+          color: "white",
+          fontFamily: "system-ui, -apple-system, sans-serif",
+          display: "flex",
+          flexDirection: "column",
+          gap: "10px",
+          backdropFilter: "blur(24px) saturate(200%)",
+          WebkitBackdropFilter: "blur(24px) saturate(200%)",
+          boxShadow: isRecording
+            ? "0 12px 48px rgba(52, 60, 237, 0.4), 0 4px 16px rgba(216, 253, 73, 0.3), 0 0 60px rgba(216, 253, 73, 0.15)"
+            : "0 12px 48px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.3)",
+          border: "1px solid rgba(255, 255, 255, 0.15)",
+          cursor: "move",
+          userSelect: "none",
+          transition: "all 0.3s ease",
+          ...({ WebkitAppRegion: "drag" } as any),
+        }}
+        onMouseUp={async () => {
+          // Save position when drag ends
+          if (currentWindow) {
+            const position = await currentWindow.outerPosition();
+            saveWindowPosition(position.x, position.y);
+          }
+        }}
+      >
       {showSaveConfirmation ? (
         <div
           style={{
@@ -208,6 +251,8 @@ export default function FloatingWindow() {
             height: "100%",
             fontSize: "14px",
             fontWeight: "500",
+            color: "#D8FD49",
+            textShadow: "0 0 20px rgba(216, 253, 73, 0.5)",
           }}
         >
           ✓ Saved locally
@@ -220,55 +265,91 @@ export default function FloatingWindow() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
-              fontSize: "12px",
-              opacity: 0.8,
+              fontSize: "14px",
+              opacity: 0.95,
+              fontWeight: "600",
+              letterSpacing: "0.5px",
             }}
           >
-            <span>{isRecording ? "Recording" : "Ready"}</span>
-            <span>{formatTime(recordingTime)}</span>
+            <span style={{
+              color: isRecording ? "#D8FD49" : "#E1DFD7",
+              animation: isRecording ? "pulse 2s ease infinite" : "none",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}>
+              {isRecording && <span style={{ fontSize: "10px" }}>●</span>}
+              {isRecording ? "Recording" : "Ready"}
+            </span>
+            <span style={{ 
+              color: "#ffffff",
+              fontSize: "16px",
+              fontWeight: "500",
+            }}>{formatTime(recordingTime)}</span>
           </div>
 
           {/* Audio Level Meters */}
           <div
             data-testid="audio-level-meter"
             style={{
-              flex: 1,
               display: "flex",
-              gap: "2px",
+              gap: "3px",
               alignItems: "flex-end",
+              padding: "4px",
+              background: "rgba(0, 0, 0, 0.25)",
+              borderRadius: "8px",
+              height: "36px",
+              minHeight: "36px",
+              maxHeight: "36px",
               ...({ WebkitAppRegion: "no-drag" } as any),
             }}
           >
-            {Array.from({ length: 20 }).map((_, i) => (
-              <div
-                key={i}
-                style={{
-                  flex: 1,
-                  backgroundColor: isRecording
-                    ? i < audioLevels.rms * 20
-                      ? "#00ff88"
-                      : i < audioLevels.peak * 20
-                        ? "#ffaa00"
-                        : "rgba(255, 255, 255, 0.15)"
-                    : "rgba(255, 255, 255, 0.1)",
-                  borderRadius: "2px",
-                  transition: "height 0.016s ease-out",
-                  height: isRecording
-                    ? i < audioLevels.peak * 20
-                      ? "100%"
-                      : "20%"
-                    : "20%",
-                }}
-              />
-            ))}
+            {Array.from({ length: 25 }).map((_, i) => {
+              const normalizedIndex = i / 25;
+              const isActive = isRecording && i < audioLevels.peak * 25;
+              const isRMS = isRecording && i < audioLevels.rms * 25;
+              
+              return (
+                <div
+                  key={i}
+                  style={{
+                    flex: 1,
+                    background: isRecording
+                      ? isRMS
+                        ? `linear-gradient(to top, #343CED, #D8FD49)`
+                        : isActive
+                          ? `linear-gradient(to top, #343CED, #E16BFF)`
+                          : "rgba(225, 223, 215, 0.12)"
+                      : "rgba(225, 223, 215, 0.1)",
+                    borderRadius: "3px",
+                    transition: "all 0.1s ease-out",
+                    height: isRecording
+                      ? isActive
+                        ? "100%"
+                        : "25%"
+                      : "25%",
+                    boxShadow: isActive
+                      ? normalizedIndex > 0.8
+                        ? "0 0 10px rgba(225, 107, 255, 0.7)"
+                        : normalizedIndex > 0.5
+                          ? "0 0 8px rgba(216, 253, 73, 0.5)"
+                          : "0 0 6px rgba(52, 60, 237, 0.4)"
+                      : "none",
+                  }}
+                />
+              );
+            })}
           </div>
 
           {/* Status */}
           <div
             style={{
-              fontSize: "10px",
-              opacity: 0.6,
+              fontSize: "11px",
+              opacity: 0.75,
               textAlign: "center",
+              color: "#E1DFD7",
+              letterSpacing: "0.4px",
+              fontWeight: "400",
             }}
           >
             {isRecording
@@ -278,5 +359,6 @@ export default function FloatingWindow() {
         </>
       )}
     </div>
+    </>
   );
 }
