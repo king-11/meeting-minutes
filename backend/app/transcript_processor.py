@@ -101,8 +101,24 @@ class TranscriptProcessor:
             - The number of chunks processed.
             - A list of JSON strings, where each string is the summary of a chunk.
         """
-
-        logger.info(f"Processing transcript (length {len(text)}) with model provider={model}, model_name={model_name}, chunk_size={chunk_size}, overlap={overlap}")
+        
+        # Basic validation
+        if not text or len(text.strip()) < 10:
+            raise ValueError(f"Transcript too short: {len(text.strip())} characters")
+        
+        if model == "ollama":
+            # Quick check if Ollama is reachable
+            import requests
+            try:
+                response = requests.get("http://localhost:11434/api/tags", timeout=2)
+                if response.status_code != 200:
+                    raise ValueError(f"Ollama server not responding (status {response.status_code})")
+            except requests.ConnectionError:
+                raise ValueError("Cannot connect to Ollama - ensure it's running with 'ollama serve'")
+            except requests.Timeout:
+                raise ValueError("Ollama server timeout - it may be overloaded")
+        
+        logger.info(f"Processing transcript: {len(text)} chars with {model}/{model_name}")
 
         all_json_data = []
         agent = None # Define agent variable

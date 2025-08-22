@@ -280,7 +280,18 @@ async fn make_api_request<R: Runtime, T: for<'de> Deserialize<'de>>(
         error_msg
     })?;
     
-    log_info!("Response body: {}", &response_text[..std::cmp::min(200, response_text.len())]);
+    // Safe UTF-8 aware truncation for logging
+    let log_preview = if response_text.len() <= 200 {
+        response_text.as_str()
+    } else {
+        // Find the last valid character boundary at or before position 200
+        let mut boundary = 200;
+        while !response_text.is_char_boundary(boundary) && boundary > 0 {
+            boundary -= 1;
+        }
+        &response_text[..boundary]
+    };
+    log_info!("Response body preview ({}B): {}", log_preview.len(), log_preview);
     
     serde_json::from_str(&response_text).map_err(|e| {
         let error_msg = format!("Failed to parse JSON: {}", e);

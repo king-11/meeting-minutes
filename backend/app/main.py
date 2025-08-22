@@ -284,8 +284,19 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
         logger.info(f"Starting background processing for process_id: {process_id}")
         
         # Early validation for common issues
-        if not transcript.text or not transcript.text.strip():
-            raise ValueError("Empty transcript text provided")
+        if not transcript.text or len(transcript.text.strip()) < 10:
+            error_msg = f"Transcript too short ({len(transcript.text.strip())} chars, minimum 10)"
+            logger.warning(f"Validation failed for {process_id}: {error_msg}")
+            await processor.db.update_process(process_id, status="failed", error=error_msg)
+            return
+            
+        if not transcript.model or not transcript.model_name:
+            error_msg = "AI model not specified"
+            await processor.db.update_process(process_id, status="failed", error=error_msg)
+            return
+        
+        # Log processing details for debugging
+        logger.info(f"Processing {process_id}: {len(transcript.text)} chars with {transcript.model}/{transcript.model_name}")
         
         if transcript.model in ["claude", "groq", "openai"]:
             # Check if API key is available for cloud providers
@@ -294,7 +305,7 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
                 provider_names = {"claude": "Anthropic", "groq": "Groq", "openai": "OpenAI"}
                 raise ValueError(f"{provider_names.get(transcript.model, transcript.model)} API key not configured. Please set your API key in the model settings.")
 
-        _, all_json_data = await processor.process_transcript(
+        chunks_processed, all_json_data = await processor.process_transcript(
             text=transcript.text,
             model=transcript.model,
             model_name=transcript.model_name,
@@ -365,11 +376,20 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
         # Save final result
         if all_json_data:
             await processor.db.update_process(process_id, status="completed", result=json.dumps(final_summary))
-            logger.info(f"Background processing completed for process_id: {process_id}")
+            logger.info(f"Background processing completed for {process_id}: {len(all_json_data)} chunks")
         else:
-            error_msg = "Summary generation failed: No chunks were processed successfully. Check logs for specific errors."
+            # Determine specific failure reason
+            if chunks_processed == 0:
+                error_msg = "No chunks were created from transcript (text may be too short)"
+            elif transcript.model == "ollama":
+                error_msg = f"Ollama processing failed - ensure Ollama is running and {transcript.model_name} model is available"
+            elif transcript.model in ["gemini", "claude", "groq"]:
+                error_msg = f"{transcript.model.title()} API processing failed - check API key configuration"
+            else:
+                error_msg = f"All {chunks_processed} chunks failed to process with {transcript.model}"
+            
             await processor.db.update_process(process_id, status="failed", error=error_msg)
-            logger.error(f"Background processing failed for process_id: {process_id} - {error_msg}")
+            logger.error(f"Background processing failed for {process_id}: {error_msg}")
 
     except ValueError as e:
         # Handle specific value errors (like API key issues)
