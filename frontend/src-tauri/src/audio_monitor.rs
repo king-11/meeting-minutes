@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use log::{debug as log_debug, info as log_info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioLevels {
@@ -38,11 +39,13 @@ pub fn calculate_audio_levels(buffer: &[f32]) -> AudioLevels {
 /// Start monitoring audio levels
 pub fn start_level_monitoring() {
     MONITORING_ACTIVE.store(true, Ordering::SeqCst);
+    log_info!("Audio level monitoring started");
 }
 
 /// Stop monitoring audio levels
 pub fn stop_level_monitoring() {
     MONITORING_ACTIVE.store(false, Ordering::SeqCst);
+    log_info!("Audio level monitoring stopped");
 }
 
 /// Check if monitoring is active
@@ -60,9 +63,16 @@ pub fn process_audio_with_levels<R: Runtime>(
     }
     
     let levels = calculate_audio_levels(buffer);
+    log_debug!("Audio levels calculated - RMS: {:.3}, Peak: {:.3}", levels.rms, levels.peak);
     
-    // Emit audio levels to frontend
-    app_handle.emit("audio-levels", &levels)?;
+    // Emit audio levels to all windows (broadcast) - this includes the floating window
+    if let Err(e) = app_handle.emit("audio-levels", &levels) {
+        log_debug!("Failed to emit audio-levels globally: {}", e);
+    } else {
+        log_debug!("Successfully emitted audio-levels globally");
+    }
+    
+    // Removed duplicate emission to floating window - global broadcast already covers it
     
     Ok(())
 }

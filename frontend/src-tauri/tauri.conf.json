@@ -82,6 +82,19 @@
                         "allow": [{ "path": "$APPDATA/*" }]
                     }
                 ]
+            }, {
+                "identifier": "floating",
+                "description": "Floating window capability for recording status display",
+                "windows": ["floating"],
+                "permissions": [
+                    "core:event:default",
+                    "core:window:default",
+                    "core:window:allow-set-position",
+                    "core:window:allow-outer-position",
+                    "core:window:allow-show",
+                    "core:window:allow-hide",
+                    "store:default"
+                ]
             }]
         }
     },
