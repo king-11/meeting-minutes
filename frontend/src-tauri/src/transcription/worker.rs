@@ -256,11 +256,12 @@ impl TranscriptionWorker {
         app_handle: &AppHandle<R>,
     ) {
         for segment in response.segments {
-            // if segment text starts with "[" and ends with "]" then skip, also for "()"
-            if segment.text.starts_with("[") || segment.text.starts_with("(") {
+            // first trim the text
+            let trimmed_text = segment.text.trim();
+            if trimmed_text.starts_with("[") || trimmed_text.starts_with("(") {
                 continue;
             }
-
+            
             if let Some(update) = self.accumulator.add_segment(&segment) {
                 self.emit_transcript(update, app_handle).await;
             }
