@@ -1,6 +1,7 @@
 "use client";
 
 import { invoke } from "@tauri-apps/api/core";
+
 import { appDataDir } from "@tauri-apps/api/path";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { Play, Pause, Square, Mic } from "lucide-react";
@@ -79,6 +80,37 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
       const result = await response.json();
       console.log("Audio file uploaded successfully:", result.message);
+      
+      // Show Google Doc result if created
+      if (result.google_doc) {
+        const docMessage = result.google_doc.test_mode 
+          ? `Test mode: Google Doc would be created for recording. Check console for details.`
+          : `Google Doc created for recording! Opening in new tab...`;
+        
+        console.log(docMessage, result.google_doc);
+        
+        // Open Google Doc if not in test mode
+        if (!result.google_doc.test_mode && result.google_doc.url) {
+          setTimeout(async () => {
+            try {
+              await invoke('plugin:shell|open', { path: result.google_doc.url });
+            } catch (error) {
+              console.error('Failed to open Google Doc with Tauri shell plugin:', error);
+              // Fallback: try to use window.open (might work in dev mode)
+              try {
+                window.open(result.google_doc.url, '_blank');
+              } catch (fallbackError) {
+                console.error('Both Tauri shell and window.open failed:', fallbackError);
+              }
+            }
+          }, 1500); // Small delay
+        }
+      }
+      
+      if (result.ai_interactions_included) {
+        console.log('AI insights were included in the Google Doc');
+      }
+      
       return result;
     } catch (error) {
       console.error("Error uploading audio file:", error);
@@ -144,7 +176,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
       // Upload the audio file to the backend
       try {
-        await uploadAudioFile(savePath);
+        // await uploadAudioFile(savePath);
       } catch (uploadError) {
         console.error("Failed to upload audio file:", uploadError);
         // Don't fail the entire operation if upload fails

@@ -437,7 +437,7 @@ const Sidebar: React.FC = () => {
                   }
                   type={settingsSaveSuccess ? "success" : "error"}
                   show={settingsSaveSuccess !== null}
-                  setShow={() => setSettingsSaveSuccess(null)}
+                  setShow={(show: boolean) => !show && setSettingsSaveSuccess(null)}
                 />
               )}
             </DialogFooter>
@@ -788,7 +788,7 @@ const Sidebar: React.FC = () => {
                       }
                       type={settingsSaveSuccess ? "success" : "error"}
                       show={settingsSaveSuccess !== null}
-                      setShow={() => setSettingsSaveSuccess(null)}
+                      setShow={(show: boolean) => !show && setSettingsSaveSuccess(null)}
                     />
                   )}
                 </DialogFooter>

@@ -6,6 +6,7 @@ use std::sync::{
 use std::time::Duration;
 
 pub mod api;
+
 pub mod audio;
 pub mod audio_monitor;
 pub mod console_utils;
@@ -967,6 +968,7 @@ pub fn run() {
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
+            api::get_recording_files,
             console_utils::show_console,
             console_utils::hide_console,
             console_utils::toggle_console,
@@ -979,6 +981,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

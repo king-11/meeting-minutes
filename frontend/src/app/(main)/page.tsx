@@ -21,7 +21,12 @@ import { useNavigation } from "@/hooks/useNavigation";
 import { useRouter } from "next/navigation";
 import type { CurrentMeeting } from "@/components/Sidebar/SidebarProvider";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import Analytics from "@/lib/analytics";
+import Analytics from '@/lib/analytics';
+import { GoogleDocButton } from '@/components/GoogleDocButton';
+import { AudioGoogleDocButton } from '@/components/AudioGoogleDocButton';
+
+
+
 
 interface ModelConfig {
   provider: "ollama" | "groq" | "claude";
@@ -78,17 +83,10 @@ export default function Home() {
   const [chunkDropMessage, setChunkDropMessage] = useState("");
   const [isSavingTranscript, setIsSavingTranscript] = useState(false);
   const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
+  const [latestRecordingPath, setLatestRecordingPath] = useState<string | null>(null);
 
-  const {
-    setCurrentMeeting,
-    setMeetings,
-    meetings,
-    isMeetingActive,
-    setIsMeetingActive,
-    setIsRecording: setSidebarIsRecording,
-    serverAddress,
-  } = useSidebar();
-  const handleNavigation = useNavigation("", ""); // Initialize with empty values
+  const { currentMeeting, setCurrentMeeting, setMeetings, meetings, isMeetingActive, setIsMeetingActive, setIsRecording: setSidebarIsRecording , serverAddress} = useSidebar();
+  const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
 
   // Ref for final buffer flush functionality
@@ -591,7 +589,8 @@ export default function Home() {
           save_path: audioPath,
         },
       });
-      console.log("Recording stopped successfully");
+      console.log('Recording stopped successfully');
+      setLatestRecordingPath(audioPath); // Track the recording path
 
       // Upload the audio file to the backend
       try {
@@ -604,8 +603,13 @@ export default function Home() {
 
         // Create FormData for file upload
         const formData = new FormData();
-        const blob = new Blob([fileData], { type: "audio/wav" });
-        formData.append("file", blob, fileName);
+        const blob = new Blob([fileData], { type: 'audio/wav' });
+        formData.append('file', blob, fileName);
+        
+        // Add meeting ID to form data if available
+        if (currentMeeting && currentMeeting.id !== 'intro-call') {
+          formData.append('meeting_id', currentMeeting.id);
+        }
 
         // Upload to backend
         const response = await fetch("http://localhost:5167/upload-audio", {
@@ -615,7 +619,37 @@ export default function Home() {
 
         if (response.ok) {
           const result = await response.json();
-          console.log("Audio file uploaded successfully:", result);
+          console.log('Audio file uploaded successfully:', result);
+          
+          // Show Google Doc result if created
+          if (result.google_doc) {
+            const docMessage = result.google_doc.test_mode 
+              ? `Test mode: Google Doc would be created. Check console for details.`
+              : `Google Doc created! Opening in new tab...`;
+            
+            console.log(docMessage, result.google_doc);
+            
+            // Open Google Doc if not in test mode
+            if (!result.google_doc.test_mode && result.google_doc.url) {
+              setTimeout(async () => {
+                try {
+                  await invoke('plugin:shell|open', { path: result.google_doc.url });
+                } catch (error) {
+                  console.error('Failed to open Google Doc with Tauri shell plugin:', error);
+                  // Fallback: try to use window.open (might work in dev mode)
+                  try {
+                    window.open(result.google_doc.url, '_blank');
+                  } catch (fallbackError) {
+                    console.error('Both Tauri shell and window.open failed:', fallbackError);
+                  }
+                }
+              }, 1000); // Small delay to ensure upload completes
+            }
+          }
+          
+          if (result.ai_interactions_included) {
+            console.log('AI interactions were included in the Google Doc');
+          }
         } else {
           console.error(
             "Failed to upload audio file:",
@@ -1309,7 +1343,7 @@ export default function Home() {
       )}
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
-        <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
+        <div className="w1/3 flex-1 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
           {/* Title area */}
           <div className="p-4 border-b border-gray-200">
             <div className="flex flex-col space-y-3">
@@ -1633,7 +1667,7 @@ export default function Home() {
         </div>
 
         {/* Right side - AI Summary */}
-        <div className="flex-1 overflow-y-auto bg-white">
+        <div className="flex1 w-0 overflow-y-auto bg-white">
           <div className="p-4 border-b border-gray-200">
             <div className="flex items-center">
               <EditableTitle
@@ -1700,9 +1734,36 @@ export default function Home() {
                 </div>
               )}
               <div className="flex-1 overflow-y-auto p-4">
-                <AISummary
-                  summary={aiSummary}
-                  status={summaryStatus}
+                <div className="mb-4 flex justify-between items-center">
+                  <h2 className="text-lg font-semibold text-gray-900">Meeting Summary</h2>
+                  <div className="flex gap-2">
+                    {currentMeeting && currentMeeting.id !== 'intro-call' && (
+                      <>
+                        <GoogleDocButton
+                          meetingId={currentMeeting.id}
+                          meetingTitle={meetingTitle}
+                          className="text-sm"
+                        />
+                        <AudioGoogleDocButton
+                          meetingId={currentMeeting.id}
+                          meetingTitle={meetingTitle}
+                          className="text-sm"
+                          recordingPath={latestRecordingPath || undefined}
+                        />
+                      </>
+                    )}
+                    {(!currentMeeting || currentMeeting.id === 'intro-call') && (
+                      <AudioGoogleDocButton
+                        meetingTitle="New Audio Session"
+                        className="text-sm"
+                        recordingPath={latestRecordingPath || undefined}
+                      />
+                    )}
+                  </div>
+                </div>
+                <AISummary 
+                  summary={aiSummary} 
+                  status={summaryStatus} 
                   error={summaryError}
                   onSummaryChange={(newSummary) => setAiSummary(newSummary)}
                   onRegenerateSummary={handleRegenerateSummary}

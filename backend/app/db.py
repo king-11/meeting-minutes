@@ -891,12 +891,14 @@ class DatabaseManager:
         now = datetime.utcnow().isoformat()
         
         try:
+            logger.info(f"Saving AI response for meeting {meeting_id}")
             async with self._get_connection() as conn:
                 await conn.execute(
                     """INSERT INTO ai_responses (meeting_id, response_data, timestamp, created_at)
                        VALUES (?, ?, ?, ?)""",
                     (meeting_id, json.dumps(response_data), response_data.get('timestamp', now), now)
                 )
+                logger.info(f"Committing AI response for meeting {meeting_id}")
                 await conn.commit()
                 logger.info(f"Saved AI response for meeting {meeting_id}")
         except Exception as e:

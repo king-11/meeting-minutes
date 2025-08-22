@@ -710,4 +710,48 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Failed to open URL: {}", e))
     }
+}
+
+// New function for getting recording files
+#[tauri::command]
+pub fn get_recording_files(data_dir: String) -> Result<Vec<String>, String> {
+    use std::fs;
+    
+    println!("get_recording_files called with data_dir: {}", data_dir);
+    
+    match fs::read_dir(&data_dir) {
+        Ok(entries) => {
+            let mut recording_files = Vec::new();
+            
+            for entry in entries {
+                match entry {
+                    Ok(entry) => {
+                        let file_name = entry.file_name();
+                        let file_name_str = file_name.to_string_lossy();
+                        
+                        // Check if it's a recording file (starts with "recording-" and ends with ".wav")
+                        if file_name_str.starts_with("recording-") && file_name_str.ends_with(".wav") {
+                            recording_files.push(file_name_str.to_string());
+                            println!("Found recording file: {}", file_name_str);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error reading directory entry: {}", e);
+                        continue;
+                    }
+                }
+            }
+            
+            // Sort by filename (which includes timestamp) in descending order
+            recording_files.sort_by(|a, b| b.cmp(a));
+            
+            println!("Returning {} recording files", recording_files.len());
+            Ok(recording_files)
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to read directory {}: {}", data_dir, e);
+            println!("{}", error_msg);
+            Err(error_msg)
+        }
+    }
 } 

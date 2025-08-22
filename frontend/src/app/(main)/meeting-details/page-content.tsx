@@ -5,6 +5,8 @@ import { Transcript, Summary, SummaryResponse } from '@/types';
 import { EditableTitle } from '@/components/EditableTitle';
 import { TranscriptView } from '@/components/TranscriptView';
 import { AISummary } from '@/components/AISummary';
+import { GoogleDocButton } from '@/components/GoogleDocButton';
+import { AudioGoogleDocButton } from '@/components/AudioGoogleDocButton';
 import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '@/components/SettingTabs';
@@ -770,7 +772,7 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
     <div className="flex flex-col h-screen bg-gray-50">
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
-        <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
+        <div className="w1/3 flex-1 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
           {/* Title area */}
           <div className="p-4 border-b border-gray-200">
             <div className="flex flex-col space-y-3">
@@ -795,7 +797,18 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
                   </svg>
                   <span className="text-sm">Copy Transcript</span>
                 </button>
-                {transcripts?.length > 0 && (
+                {/* <GoogleDocButton 
+                  meetingId={meeting.id}
+                  meetingTitle={meetingTitle || meeting.title}
+                  disabled={transcripts?.length === 0}
+                  className="px-3 py-2 text-sm shadow-sm"
+                /> */}
+                <AudioGoogleDocButton 
+                  meetingId={meeting.id}
+                  meetingTitle={meetingTitle || meeting.title}
+                  className="px-3 py-2 text-sm shadow-sm"
+                />
+                {/* {transcripts?.length > 0 && (
                   <>
                     <button
                       onClick={() => {
@@ -864,7 +877,7 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
                               message={settingsSaveSuccess ? 'Settings saved successfully' : 'Failed to save settings'} 
                               type={settingsSaveSuccess ? 'success' : 'error'} 
                               show={settingsSaveSuccess !== null}
-                              setShow={() => setSettingsSaveSuccess(null)}
+                              setShow={(show: boolean) => !show && setSettingsSaveSuccess(null)}
                             />
                           </DialogFooter>
                         )}
@@ -874,7 +887,7 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
                     </Dialog>
                   
                   </>
-                )}
+                )} */}
               </div>
             </div>
           </div>
@@ -885,7 +898,7 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
           </div>
           
           {/* Custom prompt input at bottom of transcript section */}
-          {!isRecording && transcripts.length > 0 && (
+          {/* {!isRecording && transcripts.length > 0 && (
             <div className="p-1 border-t border-gray-200">
               <textarea
                 placeholder="Add context for AI summary. For example people involved, meeting overview, objective etc..."
@@ -895,11 +908,11 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
                 disabled={summaryStatus === 'processing'}
               />
             </div>
-          )}
+          )} */}
         </div>
 
         {/* Right side - AI Summary */}
-        <div className="flex-1 overflow-y-auto bg-white">
+        {/* <div className="flex-1 overflow-y-auto bg-white">
           <div className="p-4 border-b border-gray-200">
             <div className="flex items-center justify-between">
               <div className="flex-1">
@@ -1038,7 +1051,7 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
               )}
             </div>
           )}
-        </div>
+        </div> */}
 
       </div>
     </div>

@@ -54,3 +54,26 @@ export interface SummaryResponse {
     total_tokens: number;
   };
 }
+
+export interface GoogleDocResult {
+  document_id: string;
+  url: string;
+  title: string;
+  test_mode?: boolean;
+}
+
+export interface CreateGoogleDocResponse {
+  success: boolean;
+  message: string;
+  google_doc: GoogleDocResult;
+}
+
+export interface CreateGoogleDocWithAudioResponse {
+  success: boolean;
+  message: string;
+  google_doc: GoogleDocResult;
+  transcript_length: number;
+  ai_interactions_included: boolean;
+  existing_transcript_included: boolean;
+  audio_file_path?: string;
+}

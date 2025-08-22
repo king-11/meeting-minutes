@@ -258,7 +258,7 @@ fi
 
 log_section "Environment Setup"
 log_info "Setting up environment variables..."
-cd ../.. && cp backend/temp.env backend/.env || handle_error "Failed to copy environment variables"
+cd ../.. 
 
 log_info "If you want to use Models hosted on Anthropic, OpenAi or GROQ, add the API keys to the .env file."
 

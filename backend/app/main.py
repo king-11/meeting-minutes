@@ -693,6 +693,13 @@ async def save_meeting_summary(data: MeetingSummaryUpdate):
 class SearchRequest(BaseModel):
     query: str
 
+class CreateGoogleDocRequest(BaseModel):
+    meeting_id: str
+
+class CreateGoogleDocWithAudioRequest(BaseModel):
+    meeting_id: Optional[str] = None
+    meeting_title: Optional[str] = None
+
 @app.post("/search-transcripts")
 async def search_transcripts(request: SearchRequest):
     """Search through meeting transcripts for the given query"""
@@ -702,6 +709,319 @@ async def search_transcripts(request: SearchRequest):
     except Exception as e:
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/create-google-doc")
+async def create_google_doc_for_meeting(request: CreateGoogleDocRequest):
+    """Create a Google Doc with meeting transcript and AI interactions"""
+    try:
+        # Get meeting details
+        meeting = await db.get_meeting(request.meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        
+        # Get transcript data from transcript_chunks
+        transcript_data = await db.get_transcript_data(request.meeting_id)
+        full_transcript = ""
+        if transcript_data and transcript_data.get('transcript_text'):
+            full_transcript = transcript_data['transcript_text']
+        else:
+            # Fallback to getting transcripts from transcripts table
+            if meeting.get('transcripts'):
+                full_transcript = "\n".join([t['text'] for t in meeting['transcripts']])
+        
+        if not full_transcript:
+            raise HTTPException(status_code=404, detail="No transcript found for this meeting")
+        
+        # Get AI responses for the meeting
+        ai_responses_content = await format_ai_responses_for_doc(request.meeting_id)
+        
+        # Create document title
+        doc_title = f"Meeting Minutes - {meeting['title']}"
+        
+        # Create document content
+        doc_content = f"""Meeting Minutes
+
+Title: {meeting['title']}
+Meeting ID: {request.meeting_id}
+Created: {meeting['created_at']}
+Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+--- FULL TRANSCRIPT ---
+{full_transcript}
+{ai_responses_content}
+"""
+        
+        # Create the Google Doc
+        google_doc_result = create_google_doc(doc_title, doc_content)
+        
+        if google_doc_result:
+            return JSONResponse({
+                "success": True,
+                "message": "Google Doc created successfully",
+                "google_doc": google_doc_result
+            })
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create Google Doc")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating Google Doc for meeting: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create Google Doc: {str(e)}")
+
+class CreateGoogleDocWithAudioPathRequest(BaseModel):
+    audio_file_path: str
+    meeting_id: Optional[str] = None
+    meeting_title: Optional[str] = None
+
+@app.post("/create-google-doc-with-audio")
+async def create_google_doc_with_audio(
+    file: UploadFile = File(...),
+    meeting_id: Optional[str] = None,
+    meeting_title: Optional[str] = None
+):
+    """Create a Google Doc with audio file transcription and AI interactions"""
+    try:
+        logger.info(f"Creating Google Doc with audio file: {file.filename}")
+        logger.info(f"Meeting ID: {meeting_id}, Meeting Title: {meeting_title}")
+        
+        # Validate file type
+        allowed_types = ["audio/wav", "audio/mp3", "audio/mpeg", "audio/x-wav", "application/octet-stream"]
+        if file.content_type not in allowed_types:
+            logger.warning(f"Unsupported file type: {file.content_type}")
+        
+        # Read file content
+        audio_content = await file.read()
+        logger.info(f"Successfully read {len(audio_content)} bytes from audio file")
+        
+        # Process audio with GenAI to get transcript
+        logger.info("Processing audio with GenAI...")
+        genai_transcript = process_audio_with_genai(audio_content, file.filename or "recording.wav")
+        
+        # Rest of the original implementation continues here...
+        # (This would contain the same logic as before for the file upload version)
+        
+    except Exception as e:
+        logger.error(f"Error creating Google Doc with audio: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create Google Doc with audio: {str(e)}")
+
+@app.post("/create-google-doc-with-audio-path")
+async def create_google_doc_with_audio_path(request: CreateGoogleDocWithAudioPathRequest):
+    """Create a Google Doc with local audio file transcription and AI interactions"""
+    try:
+        logger.info(f"Creating Google Doc with local audio file: {request.audio_file_path}")
+        logger.info(f"Meeting ID: {request.meeting_id}, Meeting Title: {request.meeting_title}")
+        
+        # Check if file exists
+        logger.info(f"Checking if file exists: {request.audio_file_path}")
+        if not os.path.exists(request.audio_file_path):
+            # Try to debug what files are in the directory
+            parent_dir = os.path.dirname(request.audio_file_path)
+            filename = os.path.basename(request.audio_file_path)
+            logger.error(f"File not found. Parent directory: {parent_dir}")
+            logger.error(f"Looking for filename: {filename}")
+            
+            try:
+                if os.path.exists(parent_dir):
+                    existing_files = os.listdir(parent_dir)
+                    logger.error(f"Files in directory: {existing_files}")
+                    # Look for files that might match
+                    matching_files = [f for f in existing_files if f.startswith('recording-') and f.endswith('.wav')]
+                    logger.error(f"Recording files found: {matching_files}")
+                else:
+                    logger.error(f"Parent directory does not exist: {parent_dir}")
+            except Exception as e:
+                logger.error(f"Error listing directory: {str(e)}")
+                
+            raise HTTPException(status_code=404, detail=f"Audio file not found: {request.audio_file_path}")
+        
+        # Read file content from local path
+        try:
+            with open(request.audio_file_path, 'rb') as f:
+                audio_content = f.read()
+            logger.info(f"Successfully read {len(audio_content)} bytes from local audio file")
+        except Exception as e:
+            logger.error(f"Failed to read audio file {request.audio_file_path}: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Failed to read audio file: {str(e)}")
+        
+        # Get filename from path
+        filename = os.path.basename(request.audio_file_path)
+
+        # Get existing AI responses if meeting_id is provided
+        ai_responses_content = ""
+        existing_transcript = ""
+        
+        if request.meeting_id:
+            try:
+                # Get existing meeting data
+                meeting = await db.get_meeting(request.meeting_id)
+                if meeting:
+                    # Get existing transcript data
+                    transcript_data = await db.get_transcript_data(request.meeting_id)
+                    if transcript_data and transcript_data.get('transcript_text'):
+                        existing_transcript = transcript_data['transcript_text']
+                    elif meeting.get('transcripts'):
+                        existing_transcript = "\n".join([t['text'] for t in meeting['transcripts']])
+                    
+                    # Get AI responses for the meeting
+                    ai_responses_content = await format_ai_responses_for_doc(request.meeting_id)
+                    
+                    if existing_transcript:
+                        sections.append(f"""--- EXISTING MEETING TRANSCRIPT ---
+{existing_transcript}""")
+                    
+                    logger.info(f"Retrieved existing data for meeting {request.meeting_id}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve existing meeting data: {str(e)}")
+        
+        # Process audio with GenAI to get transcript
+        logger.info("Processing audio with GenAI...")
+        genai_transcript = process_audio_with_genai(audio_content, existing_transcript, filename)
+        
+        # Prepare content sections
+        sections = []
+        
+        # Add basic info section
+        basic_info = f"""Audio File Processing
+
+File: {filename}
+File Path: {request.audio_file_path}
+Size: {len(audio_content)} bytes
+Processed at: {time.strftime('%Y-%m-%d %H:%M:%S')}"""
+        
+        if request.meeting_id:
+            basic_info += f"\nMeeting ID: {request.meeting_id}"
+        if request.meeting_title:
+            basic_info += f"\nMeeting Title: {request.meeting_title}"
+            
+        sections.append(basic_info)
+        
+        # Add transcript section
+        sections.append(genai_transcript)
+#         sections.append(f"""--- AUDIO TRANSCRIPT ---
+# {genai_transcript}""")
+        
+        
+        # Add AI responses if available
+        if ai_responses_content:
+            sections.append(ai_responses_content)
+        
+        # Create document title
+        if request.meeting_title:
+            doc_title = f"Meeting Minutes with Audio - {request.meeting_title}"
+        elif request.meeting_id:
+            doc_title = f"Meeting Minutes with Audio - {request.meeting_id}"
+        else:
+            doc_title = f"Audio Processing - {filename}"
+        
+        # Combine all sections
+        doc_content = "\n\n".join(sections)
+        
+        # Create the Google Doc
+        google_doc_result = create_google_doc(doc_title, doc_content)
+        
+        if google_doc_result:
+            return JSONResponse({
+                "success": True,
+                "message": "Google Doc created successfully with audio transcription",
+                "google_doc": google_doc_result,
+                "transcript_length": len(genai_transcript),
+                "ai_interactions_included": bool(ai_responses_content),
+                "existing_transcript_included": bool(existing_transcript)
+            })
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create Google Doc")
+        
+    except Exception as e:
+        logger.error(f"Error creating Google Doc with audio: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create Google Doc with audio: {str(e)}")
+        
+        # Continue with the same logic as above for processing sections...
+        # Prepare content sections
+        sections = []
+        
+        # Add basic info section  
+        basic_info = f"""Audio File Processing
+
+File: {filename}
+File Path: {request.audio_file_path}
+Size: {len(audio_content)} bytes
+Processed at: {time.strftime('%Y-%m-%d %H:%M:%S')}"""
+        
+        if request.meeting_id:
+            basic_info += f"\nMeeting ID: {request.meeting_id}"
+        if request.meeting_title:
+            basic_info += f"\nMeeting Title: {request.meeting_title}"
+            
+        sections.append(basic_info)
+        
+        # Add transcript section
+        sections.append(f"""--- AUDIO TRANSCRIPT ---
+{genai_transcript}""")
+        
+        # Get existing AI responses if meeting_id is provided
+        ai_responses_content = ""
+        existing_transcript = ""
+        
+        if request.meeting_id:
+            try:
+                # Get existing meeting data
+                meeting = await db.get_meeting(request.meeting_id)
+                if meeting:
+                    # Get existing transcript data
+                    transcript_data = await db.get_transcript_data(request.meeting_id)
+                    if transcript_data and transcript_data.get('transcript_text'):
+                        existing_transcript = transcript_data['transcript_text']
+                    elif meeting.get('transcripts'):
+                        existing_transcript = "\n".join([t['text'] for t in meeting['transcripts']])
+                    
+                    # Get AI responses for the meeting
+                    ai_responses_content = await format_ai_responses_for_doc(request.meeting_id)
+                    
+                    if existing_transcript:
+                        sections.append(f"""--- EXISTING MEETING TRANSCRIPT ---
+{existing_transcript}""")
+                    
+                    logger.info(f"Retrieved existing data for meeting {request.meeting_id}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve existing meeting data: {str(e)}")
+        
+        # Add AI responses if available
+        if ai_responses_content:
+            sections.append(ai_responses_content)
+        
+        # Create document title
+        if request.meeting_title:
+            doc_title = f"Meeting Minutes with Audio - {request.meeting_title}"
+        elif request.meeting_id:
+            doc_title = f"Meeting Minutes with Audio - {request.meeting_id}"
+        else:
+            doc_title = f"Audio Processing - {filename}"
+        
+        # Combine all sections
+        doc_content = "\n\n".join(sections)
+        
+        # Create the Google Doc
+        google_doc_result = create_google_doc(doc_title, doc_content)
+        
+        if google_doc_result:
+            return JSONResponse({
+                "success": True,
+                "message": "Google Doc created successfully with recorded audio transcription",
+                "google_doc": google_doc_result,
+                "transcript_length": len(genai_transcript),
+                "ai_interactions_included": bool(ai_responses_content),
+                "existing_transcript_included": bool(existing_transcript),
+                "audio_file_path": request.audio_file_path
+            })
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create Google Doc")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating Google Doc with audio path: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create Google Doc with audio path: {str(e)}")
 
 # @app.websocket("/ws/{meeting_id}")
 # async def websocket_endpoint(websocket: WebSocket, meeting_id: str):
@@ -784,7 +1104,11 @@ async def process_realtime_transcript(request: RealtimeTranscriptRequest):
             # })
             
             # Store in database
-            # await db.save_ai_response(request.meeting_id, ai_response)
+            await db.save_ai_response(request.meeting_id, {
+                "request": request.transcript_chunk,
+                "response": ai_response,
+                "timestamp": datetime.utcnow().isoformat()
+            })
             
             return JSONResponse({
                 "status": "success",
@@ -857,7 +1181,7 @@ def get_google_credentials():
     
     return None
 
-def process_audio_with_genai(audio_content: bytes, filename: str) -> str:
+def process_audio_with_genai(audio_content: bytes, existing_transcript: str, filename: str) -> str:
     """Process audio file with Google GenAI and return transcript"""
     try:
         # Get GenAI API key from environment
@@ -885,8 +1209,25 @@ def process_audio_with_genai(audio_content: bytes, filename: str) -> str:
             response = client.models.generate_content(
                 model="gemini-2.5-flash", 
                 contents=[
-                    "Generate a transcript of the speech. In the transcript, whenever someone says anything related to money, add this line: 'Gleany Glean'. Label different speakers as 'Speaker 1' and 'Speaker 2', extra custom text added in transcript should be labeled as 'Speaker Glean'.", 
-                    myfile
+                    """
+                    Generate a transcript of the speech from given audio file.
+                    In the transcript, label different speakers as 'Speaker 1' and 'Speaker 2', and so on.
+                    A rough transcript of the speech is provided below. Whenever the transcript starts with "Glean:", it is an AI response, so should be included in the transcript even if it's not in the audio file.
+                    At the end generate a summary of the transcript.
+
+                    The response should be in the following format:
+                    ==== TRANSCRIPT ====
+                    Speaker 1: ...
+                    Speaker 2: ...
+                    Speaker Glean: ...
+                    Speaker 1: ...
+                    ...
+
+                    ==== SUMMARY ====
+                    ...
+                    """,
+                    myfile,
+                    existing_transcript
                 ]
             )
             
@@ -902,6 +1243,32 @@ def process_audio_with_genai(audio_content: bytes, filename: str) -> str:
     except Exception as e:
         logger.error(f"Error processing audio with GenAI: {str(e)}")
         return f"GenAI processing failed: {str(e)}"
+
+async def format_ai_responses_for_doc(meeting_id: str) -> str:
+    """Format AI responses and requests for inclusion in Google Doc"""
+    try:
+        ai_responses = await db.get_ai_responses(meeting_id)
+        if not ai_responses:
+            return ""
+        
+        # Sort responses by timestamp
+        ai_responses.sort(key=lambda x: x.get('timestamp', ''))
+        
+        formatted_content = "\n\n--- AI INTERACTIONS ---\n"
+        
+        for i, response in enumerate(ai_responses, 1):
+            request_text = response.get('request', 'No request recorded')
+            response_text = response.get('response', 'No response recorded')
+            timestamp = response.get('timestamp', 'Unknown time')
+            
+            formatted_content += f"\n{i}. Interaction at {timestamp}:\n"
+            formatted_content += f"   Request: {request_text}\n"
+            formatted_content += f"   AI Response: {response_text}\n"
+        
+        return formatted_content
+    except Exception as e:
+        logger.error(f"Error formatting AI responses for doc: {str(e)}")
+        return "\n\n--- AI INTERACTIONS ---\nError retrieving AI interactions."
 
 def create_google_doc(title: str, content: str):
     """Create a Google Doc with the specified title and content"""
@@ -982,12 +1349,13 @@ def create_google_doc(title: str, content: str):
         return None
 
 @app.post("/upload-audio")
-async def upload_audio(file: UploadFile = File(...)):
-    """Upload audio file endpoint"""
+async def upload_audio(file: UploadFile = File(...), meeting_id: Optional[str] = None):
+    """Upload audio file endpoint with optional meeting association"""
     try:
         logger.info(f"Received audio file upload: {file.filename}")
         logger.info(f"File size: {file.size} bytes")
         logger.info(f"Content type: {file.content_type}")
+        logger.info(f"Associated meeting ID: {meeting_id}")
         
         # Validate file type (optional - you can add more validation)
         allowed_types = ["audio/wav", "audio/mp3", "audio/mpeg", "audio/x-wav", "application/octet-stream"]
@@ -1002,17 +1370,27 @@ async def upload_audio(file: UploadFile = File(...)):
         logger.info("Processing audio with GenAI...")
         genai_transcript = process_audio_with_genai(content, file.filename or "recording.wav")
         
-        # Create Google Doc with GenAI transcript as content
+        # Get AI responses if meeting_id is provided
+        ai_responses_content = ""
+        if meeting_id:
+            try:
+                ai_responses_content = await format_ai_responses_for_doc(meeting_id)
+                logger.info(f"Retrieved AI responses for meeting {meeting_id}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve AI responses for meeting {meeting_id}: {str(e)}")
+        
         doc_title = file.filename or "Audio Recording"
         doc_content = f"""Audio Transcription
 
 File: {file.filename}
-Size: {len(content)} bytes
+Size: {len(audio_content)} bytes
 Content Type: {file.content_type}
 Processed at: {time.strftime('%Y-%m-%d %H:%M:%S')}
+{f"Meeting ID: {meeting_id}" if meeting_id else ""}
 
 --- TRANSCRIPT ---
 {genai_transcript}
+{ai_responses_content}
 """
         
         google_doc_result = create_google_doc(doc_title, doc_content)
@@ -1023,13 +1401,15 @@ Processed at: {time.strftime('%Y-%m-%d %H:%M:%S')}
             "filename": file.filename,
             "size": len(content),
             "content_type": file.content_type,
-            "transcript": genai_transcript[:500] + "..." if len(genai_transcript) > 500 else genai_transcript  # Include first 500 chars in response
+            "meeting_id": meeting_id,
+            "transcript": genai_transcript[:500] + "..." if len(genai_transcript) > 500 else genai_transcript,  # Include first 500 chars in response
+            "ai_interactions_included": bool(ai_responses_content)
         }
         
         # Add Google Doc info to response if creation was successful
         if google_doc_result:
             response_data["google_doc"] = google_doc_result
-            logger.info(f"Google Doc created for audio file with transcript: {google_doc_result['url']}")
+            logger.info(f"Google Doc created for audio file with transcript and AI responses: {google_doc_result['url']}")
         else:
             response_data["google_doc"] = None
             logger.info("Google Doc creation skipped or failed")

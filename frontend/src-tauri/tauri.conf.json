@@ -79,6 +79,8 @@
             "core:window:allow-set-focus",
             "store:default",
             "global-shortcut:default",
+            "shell:default",
+            "shell:allow-open",
             {
               "identifier": "fs:scope",
               "allow": [{ "path": "$APPDATA/*" }]
